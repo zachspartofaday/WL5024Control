@@ -9,6 +9,7 @@ final class BLETransport: NSObject, RawHeadsetTransport {
 
     let kind = TransportKind.bluetooth
     private(set) var isReady = false
+    private(set) var lifecycle: BluetoothLifecycleState = .stopped
 
     private var centralManager: CBCentralManager?
     private var peripheral: CBPeripheral?
@@ -16,7 +17,9 @@ final class BLETransport: NSObject, RawHeadsetTransport {
     private var notifyCharacteristic: CBCharacteristic?
     private var updateHandler: (@Sendable (TransportUpdate) -> Void)?
     private var pendingContinuation: CheckedContinuation<Data, any Error>?
+    private var pendingMatcher: RaceResponseMatcher?
     private var timeoutTask: Task<Void, Never>?
+    private var retryTask: Task<Void, Never>?
 
     func configure(updateHandler: @escaping @Sendable (TransportUpdate) -> Void) {
         self.updateHandler = updateHandler
@@ -25,13 +28,16 @@ final class BLETransport: NSObject, RawHeadsetTransport {
     func start() {
         guard centralManager == nil else { return }
         DiagnosticRecorder.shared.record("bluetooth", "Starting CoreBluetooth discovery")
-        updateHandler?(.searching)
+        transition(.startScanning)
+        updateHandler?(.searching(.bluetooth))
         centralManager = CBCentralManager(delegate: self, queue: .main)
     }
 
     func stop() {
         timeoutTask?.cancel()
         timeoutTask = nil
+        retryTask?.cancel()
+        retryTask = nil
         finishPending(with: .failure(CancellationError()))
         if let peripheral {
             centralManager?.cancelPeripheralConnection(peripheral)
@@ -42,9 +48,10 @@ final class BLETransport: NSObject, RawHeadsetTransport {
         writeCharacteristic = nil
         notifyCharacteristic = nil
         isReady = false
+        transition(.stop)
     }
 
-    func transact(_ request: Data, timeout: Duration) async throws -> Data {
+    func transact(_ transaction: TransportTransaction, timeout: Duration) async throws -> Data {
         guard isReady,
               let peripheral,
               let writeCharacteristic else {
@@ -57,16 +64,17 @@ final class BLETransport: NSObject, RawHeadsetTransport {
         DiagnosticRecorder.shared.record(
             "bluetooth-tx",
             "RACE request",
-            details: ["bytes": DiagnosticRecorder.hex(request)]
+            details: ["bytes": DiagnosticRecorder.hex(transaction.request)]
         )
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 pendingContinuation = continuation
+                pendingMatcher = transaction.expectedResponse
                 let writeType: CBCharacteristicWriteType = writeCharacteristic.properties.contains(.write)
                     ? .withResponse
                     : .withoutResponse
-                peripheral.writeValue(request, for: writeCharacteristic, type: writeType)
+                peripheral.writeValue(transaction.request, for: writeCharacteristic, type: writeType)
 
                 timeoutTask = Task { @MainActor [weak self] in
                     do {
@@ -90,7 +98,8 @@ final class BLETransport: NSObject, RawHeadsetTransport {
         guard let centralManager else { return }
         switch centralManager.state {
         case .poweredOn:
-            updateHandler?(.searching)
+            transition(.startScanning)
+            updateHandler?(.searching(.bluetooth))
             centralManager.scanForPeripherals(
                 withServices: [Self.serviceUUID],
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
@@ -98,11 +107,11 @@ final class BLETransport: NSObject, RawHeadsetTransport {
         case .unauthorized:
             updateHandler?(.bluetoothPermissionDenied)
         case .unsupported, .poweredOff:
-            updateHandler?(.unavailable)
+            updateHandler?(.bluetoothUnavailable)
         case .resetting, .unknown:
-            updateHandler?(.searching)
+            updateHandler?(.searching(.bluetooth))
         @unknown default:
-            updateHandler?(.unavailable)
+            updateHandler?(.bluetoothUnavailable)
         }
     }
 
@@ -113,14 +122,28 @@ final class BLETransport: NSObject, RawHeadsetTransport {
         notifyCharacteristic = characteristics.first { $0.properties.contains(.notify) || $0.properties.contains(.indicate) }
 
         guard let peripheral,
-              let writeCharacteristic,
+              writeCharacteristic != nil,
               let notifyCharacteristic else {
-            updateHandler?(.failed("The Airoha control characteristics were incomplete."))
+            failSetup("The Airoha control characteristics were incomplete.")
             return
         }
 
         peripheral.setNotifyValue(true, for: notifyCharacteristic)
+        transition(.discoveredCharacteristics)
+    }
+
+    private func completeSetup() {
+        guard let peripheral,
+              let writeCharacteristic,
+              let notifyCharacteristic,
+              notifyCharacteristic.isNotifying else {
+            failSetup("The headset did not enable control notifications.")
+            return
+        }
         isReady = true
+        transition(.notificationsEnabled)
+        retryTask?.cancel()
+        retryTask = nil
         let name = peripheral.name?.isEmpty == false ? peripheral.name! : "Dell WL5024"
         DiagnosticRecorder.shared.record(
             "bluetooth",
@@ -149,7 +172,42 @@ final class BLETransport: NSObject, RawHeadsetTransport {
         timeoutTask = nil
         guard let continuation = pendingContinuation else { return }
         pendingContinuation = nil
+        pendingMatcher = nil
         continuation.resume(with: result)
+    }
+
+    private func failSetup(_ message: String) {
+        isReady = false
+        transition(.setupFailed)
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        finishPending(with: .failure(HeadsetError.transport(message)))
+        updateHandler?(.failed(source: .bluetooth, message: message, willRetry: true))
+
+        if let peripheral {
+            centralManager?.cancelPeripheralConnection(peripheral)
+        }
+        peripheral = nil
+        retryTask?.cancel()
+        retryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(1))
+                self?.beginScanningIfPossible()
+            } catch is CancellationError {
+                // The transport stopped or a newer retry replaced this one.
+            } catch {
+                self?.beginScanningIfPossible()
+            }
+        }
+    }
+
+    private func transition(_ event: BluetoothLifecycleEvent) {
+        lifecycle = BluetoothLifecyclePolicy.next(after: event)
+        DiagnosticRecorder.shared.record(
+            "bluetooth",
+            "Lifecycle changed",
+            details: ["state": String(describing: lifecycle)]
+        )
     }
 }
 
@@ -181,12 +239,14 @@ extension BLETransport: @preconcurrency CBCentralManagerDelegate {
             ]
         )
         self.peripheral = peripheral
+        transition(.discoveredPeripheral)
         peripheral.delegate = self
         central.stopScan()
         central.connect(peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        transition(.connected)
         DiagnosticRecorder.shared.record(
             "bluetooth",
             "Peripheral connected",
@@ -200,9 +260,7 @@ extension BLETransport: @preconcurrency CBCentralManagerDelegate {
         didFailToConnect peripheral: CBPeripheral,
         error: (any Error)?
     ) {
-        self.peripheral = nil
-        updateHandler?(.failed(error?.localizedDescription ?? "Unable to connect over Bluetooth."))
-        beginScanningIfPossible()
+        failSetup(error?.localizedDescription ?? "Unable to connect over Bluetooth.")
     }
 
     func centralManager(
@@ -212,6 +270,7 @@ extension BLETransport: @preconcurrency CBCentralManagerDelegate {
         isReconnecting: Bool,
         error: (any Error)?
     ) {
+        guard self.peripheral?.identifier == peripheral.identifier else { return }
         isReady = false
         DiagnosticRecorder.shared.record(
             "bluetooth",
@@ -225,7 +284,7 @@ extension BLETransport: @preconcurrency CBCentralManagerDelegate {
         writeCharacteristic = nil
         notifyCharacteristic = nil
         finishPending(with: .failure(HeadsetError.disconnected))
-        updateHandler?(.disconnected)
+        updateHandler?(.bluetoothDisconnected)
         beginScanningIfPossible()
     }
 }
@@ -233,11 +292,11 @@ extension BLETransport: @preconcurrency CBCentralManagerDelegate {
 extension BLETransport: @preconcurrency CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: (any Error)?) {
         if let error {
-            updateHandler?(.failed(error.localizedDescription))
+            failSetup(error.localizedDescription)
             return
         }
         guard let service = peripheral.services?.first(where: { $0.uuid == Self.serviceUUID }) else {
-            updateHandler?(.failed("The WL5024 control service was not found."))
+            failSetup("The WL5024 control service was not found.")
             return
         }
         DiagnosticRecorder.shared.record(
@@ -257,10 +316,23 @@ extension BLETransport: @preconcurrency CBPeripheralDelegate {
         error: (any Error)?
     ) {
         if let error {
-            updateHandler?(.failed(error.localizedDescription))
+            failSetup(error.localizedDescription)
             return
         }
         configureCharacteristics(service.characteristics ?? [])
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateNotificationStateFor characteristic: CBCharacteristic,
+        error: (any Error)?
+    ) {
+        guard characteristic.uuid == notifyCharacteristic?.uuid else { return }
+        if let error {
+            failSetup(error.localizedDescription)
+            return
+        }
+        completeSetup()
     }
 
     func peripheral(
@@ -269,7 +341,11 @@ extension BLETransport: @preconcurrency CBPeripheralDelegate {
         error: (any Error)?
     ) {
         if let error {
-            finishPending(with: .failure(error))
+            if pendingContinuation != nil {
+                finishPending(with: .failure(error))
+            } else {
+                updateHandler?(.failed(source: .bluetooth, message: error.localizedDescription, willRetry: false))
+            }
             return
         }
         guard characteristic.uuid == notifyCharacteristic?.uuid,
@@ -284,7 +360,11 @@ extension BLETransport: @preconcurrency CBPeripheralDelegate {
                 "bytes": DiagnosticRecorder.hex(value),
             ]
         )
-        guard pendingContinuation != nil else { return }
+        guard pendingContinuation != nil,
+              TransactionResponseRouter.classify(value, pending: pendingMatcher) == .matched else {
+            updateHandler?(.unsolicitedBluetooth(value))
+            return
+        }
         finishPending(with: .success(value))
     }
 

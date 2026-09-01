@@ -6,5 +6,13 @@ protocol RawHeadsetTransport: AnyObject {
     var isReady: Bool { get }
     func start()
     func stop()
-    func transact(_ request: Data, timeout: Duration) async throws -> Data
+    func transact(_ transaction: TransportTransaction, timeout: Duration) async throws -> Data
+}
+
+@MainActor
+protocol HeadsetTransporting: AnyObject {
+    var activeKind: TransportKind? { get }
+    func start(updateHandler: @escaping @Sendable (TransportUpdate) -> Void)
+    func stop()
+    func transact(_ transaction: TransportTransaction, timeout: Duration) async throws -> Data
 }

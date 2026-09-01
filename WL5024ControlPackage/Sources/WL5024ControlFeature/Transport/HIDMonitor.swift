@@ -88,7 +88,7 @@ final class HIDMonitor {
         guard let matchedDevice, CFEqual(matchedDevice, device) else { return }
         self.matchedDevice = nil
         DiagnosticRecorder.shared.record("hid", "WL5024 receiver interface removed")
-        updateHandler?(.disconnected)
+        updateHandler?(.receiverRemoved)
     }
 
     private func handleInput(_ value: IOHIDValue) {

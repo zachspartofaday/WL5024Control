@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 struct DiagnosticsView: View {
     @Bindable var model: HeadsetModel
     @State private var isExporting = false
-    @State private var exportMessage: String?
+    @State private var exportAlert: DiagnosticExportAlert?
 
     var body: some View {
         List {
@@ -14,6 +14,9 @@ struct DiagnosticsView: View {
                 LabeledContent("Transport", value: model.snapshot.device.transport?.rawValue.capitalized ?? "None")
                 if let updated = model.snapshot.lastUpdated {
                     LabeledContent("Last update", value: updated.formatted(date: .abbreviated, time: .standard))
+                }
+                if let attempted = model.snapshot.lastAttemptedAt {
+                    LabeledContent("Last attempted", value: attempted.formatted(date: .abbreviated, time: .standard))
                 }
                 Button {
                     exportLog()
@@ -53,16 +56,25 @@ struct DiagnosticsView: View {
                 }
             }
         }
-        .alert(
-            "Diagnostic export",
-            isPresented: Binding(
-                get: { exportMessage != nil },
-                set: { if !$0 { exportMessage = nil } }
-            )
-        ) {
-            Button("OK") { exportMessage = nil }
+        .alert("Diagnostic Export", isPresented: Binding(
+            get: { exportAlert != nil },
+            set: { if !$0 { exportAlert = nil } }
+        )) {
+            if case .failed = exportAlert {
+                Button("Choose Another Location", action: exportLog)
+                Button("Cancel", role: .cancel) { exportAlert = nil }
+            } else {
+                Button("Done", role: .cancel) { exportAlert = nil }
+            }
         } message: {
-            Text(exportMessage ?? "")
+            switch exportAlert {
+            case .saved(let filename, let byteCount):
+                Text("Saved \(byteCount.formatted(.byteCount(style: .file))) to \(filename).")
+            case .failed:
+                Text("Unable to save the log. Choose another location and try again.")
+            case nil:
+                EmptyView()
+            }
         }
     }
 
@@ -75,7 +87,7 @@ struct DiagnosticsView: View {
         Task { @MainActor in
             defer { isExporting = false }
             do {
-                let data = try await model.collectDiagnosticReport()
+                let report = try await model.collectDiagnosticReport()
                 let panel = NSSavePanel()
                 panel.title = "Export WL5024 Diagnostic Log"
                 panel.nameFieldStringValue = "WL5024-diagnostics-\(Self.filenameTimestamp).wl5024log.json"
@@ -83,10 +95,18 @@ struct DiagnosticsView: View {
                 panel.canCreateDirectories = true
 
                 guard panel.runModal() == .OK, let url = panel.url else { return }
-                try data.write(to: url, options: .atomic)
-                exportMessage = "Saved \(data.count.formatted(.byteCount(style: .file))) to \(url.lastPathComponent)."
+                let data = try await DiagnosticExporter.encode(report)
+                try await DiagnosticExporter.write(data, to: url)
+                exportAlert = .saved(filename: url.lastPathComponent, byteCount: data.count)
+            } catch is CancellationError {
+                return
             } catch {
-                exportMessage = error.localizedDescription
+                DiagnosticRecorder.shared.record(
+                    "export",
+                    "Diagnostic export failed",
+                    details: ["error": error.localizedDescription]
+                )
+                exportAlert = .failed
             }
         }
     }

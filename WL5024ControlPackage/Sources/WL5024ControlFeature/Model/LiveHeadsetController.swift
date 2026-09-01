@@ -2,16 +2,35 @@ import Foundation
 
 @MainActor
 public final class LiveHeadsetController: HeadsetController {
-    private let transport = TransportCoordinator()
+    private let transport: any HeadsetTransporting
+    private let qualifiedWrites: Set<HeadsetSettingKey>
     private var snapshot = HeadsetSnapshot(
         connection: .idle,
         capabilities: Set(HeadsetSettingKey.allCases),
-        values: Dictionary(uniqueKeysWithValues: HeadsetSettingKey.allCases.map { ($0, $0.defaultValue) })
+        readiness: Dictionary(uniqueKeysWithValues: HeadsetSettingKey.allCases.map { ($0, .unavailable) })
     )
     private let stream: AsyncStream<HeadsetEvent>
     private let continuation: AsyncStream<HeadsetEvent>.Continuation
 
+    var currentSnapshot: HeadsetSnapshot { snapshot }
+
     public init() {
+        transport = TransportCoordinator()
+        qualifiedWrites = []
+        let pair = AsyncStream.makeStream(
+            of: HeadsetEvent.self,
+            bufferingPolicy: .bufferingNewest(20)
+        )
+        stream = pair.stream
+        continuation = pair.continuation
+    }
+
+    init(
+        transport: any HeadsetTransporting,
+        qualifiedWrites: Set<HeadsetSettingKey> = []
+    ) {
+        self.transport = transport
+        self.qualifiedWrites = qualifiedWrites
         let pair = AsyncStream.makeStream(
             of: HeadsetEvent.self,
             bufferingPolicy: .bufferingNewest(20)
@@ -27,7 +46,7 @@ public final class LiveHeadsetController: HeadsetController {
         snapshot.connection = .searching
         continuation.yield(.snapshot(snapshot))
         transport.start { [weak self] update in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.handle(update)
             }
         }
@@ -44,14 +63,17 @@ public final class LiveHeadsetController: HeadsetController {
             throw HeadsetError.disconnected
         }
 
-        do {
-            let response = try await transport.transact(WL5024Command.getAutomaticMedia.frame.encoded)
-            snapshot.values[.automaticMedia] = .boolean(
-                try WL5024Command.getAutomaticMedia.decodeAutomaticMedia(from: response)
-            )
-        } catch {
-            continuation.yield(.error(Self.headsetError(error)))
-        }
+        snapshot.lastAttemptedAt = .now
+        continuation.yield(.snapshot(snapshot))
+        let response = try await transport.transact(
+            WL5024Command.getAutomaticMedia.transaction,
+            timeout: .seconds(3)
+        )
+        snapshot.values[.automaticMedia] = .boolean(
+            try WL5024Command.getAutomaticMedia.decodeAutomaticMedia(from: response)
+        )
+        snapshot.valueConfidence[.automaticMedia] = .deviceConfirmed
+        snapshot.readiness[.automaticMedia] = qualifiedWrites.contains(.automaticMedia) ? .ready : .readOnly
         snapshot.lastUpdated = .now
         continuation.yield(.snapshot(snapshot))
         return snapshot
@@ -64,6 +86,9 @@ public final class LiveHeadsetController: HeadsetController {
         guard case .connected = snapshot.connection else {
             throw HeadsetError.disconnected
         }
+        guard snapshot.readiness(for: key).allowsWrite else {
+            throw HeadsetError.unsupported(key)
+        }
         guard let command = Self.command(for: key, value: value) else {
             let definition = CapabilityCatalog.definition(for: key)
             throw HeadsetError.transport(
@@ -71,8 +96,22 @@ public final class LiveHeadsetController: HeadsetController {
             )
         }
 
-        _ = try await transport.transact(command.frame.encoded)
+        snapshot.lastAttemptedAt = .now
+        continuation.yield(.snapshot(snapshot))
+        _ = try await transport.transact(command.transaction, timeout: .seconds(3))
+
+        if key == .automaticMedia, case .boolean(let requestedValue) = value {
+            let readback = try await transport.transact(
+                WL5024Command.getAutomaticMedia.transaction,
+                timeout: .seconds(3)
+            )
+            let storedValue = try WL5024Command.getAutomaticMedia.decodeAutomaticMedia(from: readback)
+            guard storedValue == requestedValue else {
+                throw HeadsetError.readbackMismatch(key)
+            }
+        }
         snapshot.values[key] = value
+        snapshot.valueConfidence[key] = .deviceConfirmed
         snapshot.lastUpdated = .now
         continuation.yield(.snapshot(snapshot))
         return snapshot
@@ -82,33 +121,45 @@ public final class LiveHeadsetController: HeadsetController {
         guard case .connected = snapshot.connection else {
             throw HeadsetError.disconnected
         }
+        guard snapshot.readiness(for: key).allowsWrite else {
+            throw HeadsetError.unsupported(key)
+        }
         throw HeadsetError.unsupported(key)
     }
 
     private func handle(_ update: TransportUpdate) {
-        switch update {
-        case .searching:
-            snapshot.connection = .searching
-        case .connectedBluetooth:
-            snapshot.connection = .connected(.bluetooth)
-            snapshot.device.transport = .bluetooth
-        case .receiverFound:
-            if case .connected = snapshot.connection { break }
-            snapshot.connection = .qualificationRequired(.receiver)
-            snapshot.device.transport = .receiver
-        case .disconnected:
-            snapshot.connection = .searching
-            snapshot.device.transport = nil
-        case .bluetoothPermissionDenied:
-            snapshot.connection = .bluetoothPermissionDenied
-        case .unavailable:
-            snapshot.connection = .unavailable
-        case .failed(let message):
-            snapshot.connection = .failed
+        TransportStateReducer.apply(update, to: &snapshot)
+        updateReadiness()
+
+        if case .failed(_, let message, false) = update {
             continuation.yield(.error(.transport(message)))
+        } else if case .unsolicitedBluetooth(let data) = update {
+            DiagnosticRecorder.shared.record(
+                "bluetooth-unsolicited",
+                "Notification did not match the pending transaction",
+                details: ["bytes": DiagnosticRecorder.hex(data)]
+            )
         }
-        snapshot.lastUpdated = .now
         continuation.yield(.snapshot(snapshot))
+    }
+
+    private func updateReadiness() {
+        let readiness: CapabilityReadiness
+        switch snapshot.connection {
+        case .connected(.bluetooth): readiness = .validationPending
+        case .connected(.receiver): readiness = .validationPending
+        default: readiness = .unavailable
+        }
+        for key in HeadsetSettingKey.allCases {
+            snapshot.readiness[key] = qualifiedWrites.contains(key) && readiness == .validationPending
+                ? .ready
+                : readiness
+        }
+        if case .connected(.bluetooth) = snapshot.connection,
+           snapshot.confidence(for: .automaticMedia) == .deviceConfirmed,
+           !qualifiedWrites.contains(.automaticMedia) {
+            snapshot.readiness[.automaticMedia] = .readOnly
+        }
     }
 
     private static func command(
@@ -135,7 +186,4 @@ public final class LiveHeadsetController: HeadsetController {
         }
     }
 
-    private static func headsetError(_ error: any Error) -> HeadsetError {
-        error as? HeadsetError ?? .transport(error.localizedDescription)
-    }
 }

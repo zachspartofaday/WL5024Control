@@ -7,7 +7,7 @@
 // ==========================================
 // Test Target Settings (Customizable by scaffold tool)
 // ==========================================
-PRODUCT_BUNDLE_IDENTIFIER = com.zachskjaveland.WL5024Control
+PRODUCT_BUNDLE_IDENTIFIER = com.zachskjaveland.WL5024ControlUITests
 TEST_TARGET_NAME = WL5024Control
 
 // Fix duplicate module name issue

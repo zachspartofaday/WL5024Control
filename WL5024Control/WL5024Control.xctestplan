@@ -9,6 +9,7 @@
     }
   ],
   "defaultOptions" : {
+    "codeCoverage" : true,
     "targetForVariableExpansion" : {
       "containerPath" : "container:WL5024Control.xcodeproj",
       "identifier" : "8BC2655B2DEDD3F400F279A4",
@@ -16,6 +17,13 @@
     }
   },
   "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:WL5024Control.xcodeproj",
+        "identifier" : "8BC265732DEDD3F500F279A4",
+        "name" : "WL5024ControlUITests"
+      }
+    },
     {
       "target" : {
         "containerPath" : "container:WL5024ControlPackage",

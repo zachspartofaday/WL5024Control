@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 public struct HeadsetSettingsView: View {
@@ -33,16 +34,43 @@ public struct HeadsetSettingsView: View {
         }
         .frame(minWidth: 720, minHeight: 500)
         .alert(
-            "Headset command failed",
+            model.failure?.title ?? LocalizedStringResource("Unable to update the headset", bundle: #bundle),
             isPresented: Binding(
-                get: { model.errorMessage != nil },
-                set: { if !$0 { model.dismissError() } }
+                get: { model.failure != nil },
+                set: { if !$0 { model.dismissFailure() } }
             )
         ) {
-            Button("OK") { model.dismissError() }
+            recoveryButtons
         } message: {
-            Text(model.errorMessage ?? "Unknown error")
+            Text(model.failure?.message ?? "Reconnect the headset and try again.")
         }
+    }
+
+    @ViewBuilder
+    private var recoveryButtons: some View {
+        if let failure = model.failure {
+            switch failure.primaryAction {
+            case .retry:
+                Button("Try Again", action: model.retryLastAction)
+                Button("Cancel", role: .cancel, action: model.dismissFailure)
+            case .reconnect:
+                Button("Reconnect", action: model.reconnect)
+                Button("Cancel", role: .cancel, action: model.dismissFailure)
+            case .openBluetoothSettings:
+                Button("Open Bluetooth Settings", action: openBluetoothSettings)
+                Button("Cancel", role: .cancel, action: model.dismissFailure)
+            case .chooseAnotherLocation, .dismiss:
+                Button("Dismiss", role: .cancel, action: model.dismissFailure)
+            }
+        }
+    }
+
+    private func openBluetoothSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Bluetooth-Settings.extension") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+        model.dismissFailure()
     }
 }
 
@@ -65,6 +93,26 @@ private struct OverviewView: View {
                         Label("Receiver detected", systemImage: "cable.connector")
                     } description: {
                         Text("The app found the USB receiver. Its HID report identifiers will be captured and validated when the headset is available.")
+                    }
+                }
+
+                if model.snapshot.connection == .bluetoothPermissionDenied {
+                    ContentUnavailableView {
+                        Label("Bluetooth access is off", systemImage: "bluetooth.slash")
+                    } description: {
+                        Text("Allow WL5024 Control to use Bluetooth, then return here and reconnect.")
+                    } actions: {
+                        Button("Open Bluetooth Settings", action: openBluetoothSettings)
+                    }
+                }
+
+                if model.snapshot.connection == .failed {
+                    ContentUnavailableView {
+                        Label("Unable to connect", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text("Turn on the headset, then reconnect. Technical details are available in Diagnostics.")
+                    } actions: {
+                        Button("Reconnect", action: model.reconnect)
                     }
                 }
             }
@@ -100,11 +148,8 @@ private struct OverviewView: View {
                         .font(.headline)
                 }
 
-                Button {
-                    model.refresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
+                Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
+                    .labelStyle(.iconOnly)
                 .help("Refresh headset settings")
                 .disabled(!isConnected)
             }
@@ -141,6 +186,13 @@ private struct OverviewView: View {
         default: "battery.25percent"
         }
     }
+
+    private func openBluetoothSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Bluetooth-Settings.extension") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
 }
 
 private struct SettingsPageView: View {
@@ -158,7 +210,7 @@ private struct SettingsPageView: View {
                     SettingRow(key: key, model: model)
                 }
             } footer: {
-                Text("Changes are written to the headset and remain in effect when this app is closed.")
+                Text("Only settings marked Ready can be changed. Settings awaiting hardware validation remain safely disabled.")
             }
         }
         .formStyle(.grouped)
@@ -171,8 +223,21 @@ private struct SettingRow: View {
 
     var body: some View {
         LabeledContent {
-            control
-                .frame(maxWidth: 280)
+            VStack(alignment: .trailing, spacing: 4) {
+                if let value = model.value(for: key) {
+                    control(value: value)
+                        .frame(maxWidth: 280)
+                        .disabled(!model.readiness(for: key).allowsWrite || model.pendingSettings.contains(key))
+                } else {
+                    Text("Not read from headset")
+                        .foregroundStyle(.secondary)
+                }
+                if model.readiness(for: key) != .ready {
+                    Text(model.readiness(for: key).status)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 Text(key.title)
@@ -183,24 +248,23 @@ private struct SettingRow: View {
             }
             .padding(.vertical, 4)
         }
-        .disabled(model.pendingSettings.contains(key))
     }
 
     @ViewBuilder
-    private var control: some View {
+    private func control(value: SettingValue) -> some View {
         switch key.controlKind {
         case .toggle:
-            Toggle("", isOn: Binding(
+            Toggle(key.title, isOn: Binding(
                 get: {
-                    if case .boolean(let value) = model.value(for: key) { value } else { false }
+                    if case .boolean(let enabled) = value { enabled } else { false }
                 },
                 set: { model.set(key, to: .boolean($0)) }
             ))
             .labelsHidden()
         case .choices:
-            Picker("", selection: Binding(
+            Picker(key.title, selection: Binding(
                 get: {
-                    if case .choice(let value) = model.value(for: key) { value } else { "" }
+                    if case .choice(let selection) = value { selection } else { "" }
                 },
                 set: { model.set(key, to: .choice($0)) }
             )) {
@@ -210,55 +274,97 @@ private struct SettingRow: View {
             }
             .labelsHidden()
         case .level(let range, let step):
-            HStack {
-                Slider(
-                    value: Binding(
-                        get: {
-                            if case .integer(let value) = model.value(for: key) { Double(value) } else { 0 }
-                        },
-                        set: { model.set(key, to: .integer(Int($0.rounded()))) }
-                    ),
-                    in: Double(range.lowerBound)...Double(range.upperBound),
-                    step: Double(step)
-                )
-                Text(integerValue.formatted())
-                    .monospacedDigit()
-                    .frame(minWidth: 28, alignment: .trailing)
-            }
+            LevelSettingControl(
+                key: key,
+                currentValue: integer(from: value),
+                range: range,
+                step: step,
+                apply: { model.set(key, to: .integer($0)) }
+            )
         case .text:
             TextSettingControl(
-                value: textValue,
+                label: key.title,
+                value: text(from: value),
                 apply: { model.set(key, to: .text($0)) }
             )
-            .id(textValue)
+            .id(text(from: value))
         case .action:
-            Button("Play sound") { model.perform(key) }
+            Button("Play Headset Sound") { model.perform(key) }
         }
     }
 
-    private var integerValue: Int {
-        if case .integer(let value) = model.value(for: key) { value } else { 0 }
+    private func integer(from value: SettingValue) -> Int {
+        if case .integer(let number) = value { number } else { 0 }
     }
 
-    private var textValue: String {
-        if case .text(let value) = model.value(for: key) { value } else { "" }
+    private func text(from value: SettingValue) -> String {
+        if case .text(let text) = value { text } else { "" }
     }
 }
 
 private struct TextSettingControl: View {
     @State private var value: String
+    let label: LocalizedStringResource
     let apply: (String) -> Void
 
-    init(value: String, apply: @escaping (String) -> Void) {
+    init(label: LocalizedStringResource, value: String, apply: @escaping (String) -> Void) {
         _value = State(initialValue: value)
+        self.label = label
         self.apply = apply
     }
 
     var body: some View {
         HStack {
-            TextField("Device name", text: $value)
+            TextField(label, text: $value)
                 .onSubmit { apply(value) }
-            Button("Apply") { apply(value) }
+            Button("Apply Name") { apply(value) }
+        }
+    }
+}
+
+private struct LevelSettingControl: View {
+    let key: HeadsetSettingKey
+    let currentValue: Int
+    let range: ClosedRange<Int>
+    let step: Int
+    let apply: (Int) -> Void
+    @State private var draftValue: Double
+
+    init(
+        key: HeadsetSettingKey,
+        currentValue: Int,
+        range: ClosedRange<Int>,
+        step: Int,
+        apply: @escaping (Int) -> Void
+    ) {
+        self.key = key
+        self.currentValue = currentValue
+        self.range = range
+        self.step = step
+        self.apply = apply
+        _draftValue = State(initialValue: Double(currentValue))
+    }
+
+    var body: some View {
+        HStack {
+            Slider(
+                value: $draftValue,
+                in: Double(range.lowerBound)...Double(range.upperBound),
+                step: Double(step)
+            ) { editing in
+                if !editing {
+                    apply(Int(draftValue.rounded()))
+                }
+            } label: {
+                Text(key.title)
+            }
+            Text(Int(draftValue.rounded()).formatted())
+                .monospacedDigit()
+                .frame(minWidth: 28, alignment: .trailing)
+                .accessibilityHidden(true)
+        }
+        .onChange(of: currentValue) {
+            draftValue = Double(currentValue)
         }
     }
 }

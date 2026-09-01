@@ -27,13 +27,14 @@ struct CapabilityCatalogTests {
         _ = try await controller.perform(.findMyHeadset)
     }
 
-    @Test @MainActor func diagnosticReportIncludesCaptureAndCapabilityMap() throws {
+    @Test @MainActor func diagnosticReportIncludesCaptureAndCapabilityMap() async throws {
         DiagnosticRecorder.shared.record(
             "test",
             "receiver captured",
             details: ["serialNumber": "PERSONAL-DEVICE"]
         )
-        let data = try DiagnosticRecorder.shared.encodedReport(snapshot: .demo())
+        let payload = DiagnosticRecorder.shared.report(snapshot: .demo())
+        let data = try await DiagnosticExporter.encode(payload)
         let report = try JSONDecoder.iso8601.decode(DiagnosticReport.self, from: data)
 
         #expect(report.formatVersion == 1)

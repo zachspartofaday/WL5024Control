@@ -1,27 +1,28 @@
 import XCTest
 
 final class WL5024ControlUITests: XCTestCase {
-
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
-        continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
-    }
-
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testDemoNavigationAndAccessibleControlNames() throws {
+        continueAfterFailure = false
         let app = XCUIApplication()
+        app.launchArguments = ["--demo"]
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        XCTAssertTrue(true)
+        XCTAssertTrue(app.staticTexts["Dell WL5024"].waitForExistence(timeout: 5))
+
+        let refresh = app.buttons["Refresh"]
+        XCTAssertTrue(refresh.exists)
+        XCTAssertTrue(refresh.isEnabled)
+
+        let wearAndAutomation = app.staticTexts["Wear & Automation"]
+        XCTAssertTrue(wearAndAutomation.exists)
+        wearAndAutomation.click()
+
+        let automaticMedia = app.switches["Automatically pause and resume media"]
+        XCTAssertTrue(automaticMedia.waitForExistence(timeout: 2))
+        XCTAssertTrue(automaticMedia.isEnabled)
+
+        app.staticTexts["Diagnostics"].click()
+        XCTAssertTrue(app.buttons["Collect & Export Log…"].waitForExistence(timeout: 2))
     }
 }

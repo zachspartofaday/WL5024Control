@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-final class TransportCoordinator {
+final class TransportCoordinator: HeadsetTransporting {
     private let bluetooth = BLETransport()
     private let hidMonitor = HIDMonitor()
     private var updateHandler: (@Sendable (TransportUpdate) -> Void)?
@@ -29,17 +29,17 @@ final class TransportCoordinator {
         updateHandler = nil
     }
 
-    func transact(_ request: Data, timeout: Duration = .seconds(3)) async throws -> Data {
+    func transact(_ transaction: TransportTransaction, timeout: Duration = .seconds(3)) async throws -> Data {
         guard activeKind == .bluetooth else {
             throw HeadsetError.transport("The receiver report profile still needs hardware qualification.")
         }
-        return try await bluetooth.transact(request, timeout: timeout)
+        return try await bluetooth.transact(transaction, timeout: timeout)
     }
 
     private func handleBluetooth(_ update: TransportUpdate) {
         if case .connectedBluetooth = update, activeKind == nil {
             activeKind = .bluetooth
-        } else if case .disconnected = update, activeKind == .bluetooth {
+        } else if case .bluetoothDisconnected = update, activeKind == .bluetooth {
             activeKind = nil
         }
         updateHandler?(update)

@@ -28,6 +28,12 @@ enable:  00 05 5A 05 00 82 2C 02 00 01
 
 Additional statically recovered generic preference modules include auto power-off (`1`), sidetone level/state (`6`/`7`), advanced passthrough (`8`), voice prompts (`9`), and touch controls (`0`). Environment detection and Smart Switch use distinct command families represented in `WL5024Command`.
 
+## Transaction safety boundary
+
+Every Bluetooth request carries an expected RACE opcode and, for preference traffic, a module identifier. Only a matching notification completes the request; other notifications are retained as unsolicited diagnostic events. Refresh timestamps advance only after a matched response decodes successfully.
+
+No physical write is enabled in the shipping live controller yet. Enabling one capability requires a captured acknowledgement signature plus a confirmed read-back recipe. The controller publishes the requested value only after both checks succeed. This keeps the statically recovered command families useful for diagnostics and tests without treating them as physically qualified facts.
+
 ## Physical validation checklist
 
 1. Capture the HR024/UD2403 IOHID interface inventory and input/output report IDs.

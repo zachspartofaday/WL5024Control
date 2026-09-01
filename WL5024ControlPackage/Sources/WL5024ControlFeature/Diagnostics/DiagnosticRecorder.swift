@@ -1,6 +1,6 @@
 import Foundation
 
-public struct DiagnosticEntry: Codable, Identifiable, Sendable {
+public struct DiagnosticEntry: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
     public let timestamp: Date
     public let category: String
@@ -22,8 +22,8 @@ public struct DiagnosticEntry: Codable, Identifiable, Sendable {
     }
 }
 
-public struct DiagnosticReport: Codable, Sendable {
-    public struct Device: Codable, Sendable {
+public struct DiagnosticReport: Codable, Equatable, Sendable {
+    public struct Device: Codable, Equatable, Sendable {
         public let model: String
         public let headsetFirmware: String?
         public let receiverFirmware: String?
@@ -31,7 +31,7 @@ public struct DiagnosticReport: Codable, Sendable {
         public let transport: String?
     }
 
-    public struct Capability: Codable, Sendable {
+    public struct Capability: Codable, Equatable, Sendable {
         public let key: String
         public let qualification: String
         public let recipe: String
@@ -46,6 +46,26 @@ public struct DiagnosticReport: Codable, Sendable {
     public let device: Device
     public let capabilities: [Capability]
     public let entries: [DiagnosticEntry]
+
+    public init(
+        formatVersion: Int,
+        generatedAt: Date,
+        appVersion: String,
+        operatingSystem: String,
+        privacy: String,
+        device: Device,
+        capabilities: [Capability],
+        entries: [DiagnosticEntry]
+    ) {
+        self.formatVersion = formatVersion
+        self.generatedAt = generatedAt
+        self.appVersion = appVersion
+        self.operatingSystem = operatingSystem
+        self.privacy = privacy
+        self.device = device
+        self.capabilities = capabilities
+        self.entries = entries
+    }
 }
 
 @MainActor
@@ -68,12 +88,12 @@ public final class DiagnosticRecorder {
         }
     }
 
-    public func encodedReport(snapshot: HeadsetSnapshot) throws -> Data {
+    public func report(snapshot: HeadsetSnapshot) -> DiagnosticReport {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         let appVersion = [version, build].compactMap { $0 }.joined(separator: " (")
 
-        let report = DiagnosticReport(
+        return DiagnosticReport(
             formatVersion: 1,
             generatedAt: .now,
             appVersion: appVersion.isEmpty ? "development" : appVersion + (build == nil ? "" : ")"),
@@ -97,14 +117,30 @@ public final class DiagnosticRecorder {
             entries: entries
         )
 
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(report)
     }
 
     public static func hex(_ data: Data, limit: Int = 8_192) -> String {
         let prefix = data.prefix(limit).map { String(format: "%02X", $0) }.joined(separator: " ")
         return data.count > limit ? prefix + " … (\(data.count) bytes total)" : prefix
+    }
+}
+
+public enum DiagnosticExporter {
+    @concurrent
+    public static func encode(_ report: DiagnosticReport) async throws -> Data {
+        try Task.checkCancellation()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(report)
+        try Task.checkCancellation()
+        return data
+    }
+
+    @concurrent
+    public static func write(_ data: Data, to url: URL) async throws {
+        try Task.checkCancellation()
+        try data.write(to: url, options: .atomic)
+        try Task.checkCancellation()
     }
 }

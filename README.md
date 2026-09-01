@@ -2,6 +2,14 @@
 
 A lightweight, native macOS menu-bar and SwiftUI settings app for the Dell Premier Wireless ANC Headset WL5024. It was derived from Dell's firmware bundle and Windows WL5024 plug-in; it does not implement firmware flashing or factory reset.
 
+## Requirements and product scope
+
+- macOS 26 or newer on Apple silicon (`arm64`)
+- Xcode 26 or newer for local development
+- English interface copy; localization is intentionally outside this personal-app release scope
+
+Live Bluetooth writes are fail-closed. A capability is writable only after its request, correlated acknowledgement, and read-back sequence has been physically qualified. Until then the app can discover the headset, read the known automatic-media value, and collect diagnostics, while displaying all unqualified settings as read-only or awaiting validation. USB receiver access is discovery-only.
+
 ## Run
 
 Open `WL5024Control.xcworkspace`, select the `WL5024Control` scheme, and run. Pass `--demo` as a launch argument to exercise every setting without a physical headset.
@@ -37,7 +45,7 @@ swift run WL5024Probe --packets
 - Voice guidance/prompts, device naming, touch/gesture controls, Smart Switch, assistant selection, and Find My Headset
 - Menu-bar automatic-media toggle, device state, battery display, diagnostics, and mock/demo operation
 
-The automatic-media RACE packets and generic preference envelope are statically recovered. Other settings have typed mappings to their firmware or Windows plug-in command families. Those marked “Ready for device validation” in Diagnostics need physical request/response traces before live writes are enabled; this prevents guessed vendor packets from being sent to the headset.
+The automatic-media RACE packets and generic preference envelope are statically recovered. Other settings have typed mappings to their firmware or Windows plug-in command families. Those marked “Ready for device validation” in Diagnostics need physical request/response traces before live writes are enabled; this prevents guessed vendor packets from being sent to the headset. Unknown values are never replaced with guessed defaults in live mode.
 
 ## Architecture
 
@@ -49,3 +57,18 @@ The automatic-media RACE packets and generic preference envelope are statically 
 - `WL5024Probe`: terminal-readable capability and packet inspection
 
 See [PROTOCOL.md](Documentation/PROTOCOL.md) for the recovered wire format and validation checklist.
+
+## Validation gates
+
+Run repository validation through XcodeBuildMCP so local results use the same build/test workflow as the audit:
+
+```sh
+xcodebuildmcp macos build --workspace-path WL5024Control.xcworkspace --scheme WL5024Control
+xcodebuildmcp macos test --workspace-path WL5024Control.xcworkspace --scheme WL5024Control
+xcodebuildmcp swift-package test --package-path WL5024ControlPackage
+xcodebuildmcp swift-package build --package-path WL5024ControlPackage --configuration release
+```
+
+The shared `WL5024Control` test plan contains both the Swift package tests and a demo-mode macOS UI smoke test with real navigation and accessible-name assertions. Swift 6 complete concurrency checking is enabled across the app, UI tests, and package. The expected clean gate is zero build warnings and zero test failures.
+
+Manual accessibility scenarios and their expected outcomes are in [ACCESSIBILITY.md](Documentation/ACCESSIBILITY.md). Physical command qualification remains governed by [PROTOCOL.md](Documentation/PROTOCOL.md).

@@ -14,20 +14,28 @@ public struct HeadsetMenuBarView: View {
             Text("Battery: \(battery)%")
         }
         Divider()
-        Toggle("Automatic media control", isOn: Binding(
-            get: {
-                if case .boolean(let enabled) = model.value(for: .automaticMedia) { enabled } else { false }
-            },
-            set: { model.set(.automaticMedia, to: .boolean($0)) }
-        ))
+        if case .boolean(let enabled) = model.value(for: .automaticMedia) {
+            Toggle("Automatic media control", isOn: Binding(
+                get: { enabled },
+                set: { model.set(.automaticMedia, to: .boolean($0)) }
+            ))
+            .disabled(!model.readiness(for: .automaticMedia).allowsWrite)
+        } else {
+            Text("Automatic media control: not read")
+        }
         Divider()
         Button("Open Settings…") {
             openWindow(id: "settings")
             NSApp.activate()
         }
         Button("Refresh") { model.refresh() }
+            .disabled(!isConnected || model.isCommandInFlight)
         Divider()
         Button("Quit WL5024 Control") { NSApp.terminate(nil) }
+    }
+
+    private var isConnected: Bool {
+        if case .connected = model.snapshot.connection { true } else { false }
     }
 }
 

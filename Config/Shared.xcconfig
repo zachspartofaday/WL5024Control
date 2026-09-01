@@ -16,11 +16,15 @@ CURRENT_PROJECT_VERSION = 1
 // Platform Configuration
 // ==========================================
 MACOSX_DEPLOYMENT_TARGET = 26.0
+SDKROOT = macosx
+SUPPORTED_PLATFORMS = macosx
 ARCHS = arm64
 SWIFT_VERSION = 6.0
 SWIFT_STRICT_CONCURRENCY = complete
 ALWAYS_SEARCH_USER_PATHS = NO
 ENABLE_HARDENED_RUNTIME = YES
+DEVELOPMENT_TEAM = 9T97GZT4MV
+CODE_SIGN_STYLE = Automatic
 
 // ==========================================
 // Info PLIST

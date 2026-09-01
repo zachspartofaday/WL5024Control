@@ -1,11 +1,13 @@
 import Foundation
 
 public enum TransportUpdate: Sendable, Equatable {
-    case searching
+    case searching(TransportKind)
     case connectedBluetooth(name: String)
     case receiverFound(HIDDeviceSummary)
-    case disconnected
+    case bluetoothDisconnected
+    case receiverRemoved
     case bluetoothPermissionDenied
-    case unavailable
-    case failed(String)
+    case bluetoothUnavailable
+    case unsolicitedBluetooth(Data)
+    case failed(source: TransportKind, message: String, willRetry: Bool)
 }

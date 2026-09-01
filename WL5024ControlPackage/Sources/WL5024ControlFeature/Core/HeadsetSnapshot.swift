@@ -8,6 +8,7 @@ public struct HeadsetSnapshot: Sendable, Equatable {
         public var batteryPercent: Int?
         public var isCharging: Bool
         public var transport: TransportKind?
+        public var receiverDetected: Bool
 
         public init(
             model: String = "Dell WL5024",
@@ -15,7 +16,8 @@ public struct HeadsetSnapshot: Sendable, Equatable {
             receiverFirmware: String? = nil,
             batteryPercent: Int? = nil,
             isCharging: Bool = false,
-            transport: TransportKind? = nil
+            transport: TransportKind? = nil,
+            receiverDetected: Bool = false
         ) {
             self.model = model
             self.headsetFirmware = headsetFirmware
@@ -23,6 +25,7 @@ public struct HeadsetSnapshot: Sendable, Equatable {
             self.batteryPercent = batteryPercent
             self.isCharging = isCharging
             self.transport = transport
+            self.receiverDetected = receiverDetected
         }
     }
 
@@ -30,20 +33,29 @@ public struct HeadsetSnapshot: Sendable, Equatable {
     public var device: DeviceInfo
     public var capabilities: Set<HeadsetSettingKey>
     public var values: [HeadsetSettingKey: SettingValue]
+    public var readiness: [HeadsetSettingKey: CapabilityReadiness]
+    public var valueConfidence: [HeadsetSettingKey: ValueConfidence]
     public var lastUpdated: Date?
+    public var lastAttemptedAt: Date?
 
     public init(
         connection: ConnectionState,
         device: DeviceInfo = DeviceInfo(),
         capabilities: Set<HeadsetSettingKey> = [],
         values: [HeadsetSettingKey: SettingValue] = [:],
-        lastUpdated: Date? = nil
+        readiness: [HeadsetSettingKey: CapabilityReadiness] = [:],
+        valueConfidence: [HeadsetSettingKey: ValueConfidence] = [:],
+        lastUpdated: Date? = nil,
+        lastAttemptedAt: Date? = nil
     ) {
         self.connection = connection
         self.device = device
         self.capabilities = capabilities
         self.values = values
+        self.readiness = readiness
+        self.valueConfidence = valueConfidence
         self.lastUpdated = lastUpdated
+        self.lastAttemptedAt = lastAttemptedAt
     }
 
     public static let disconnected = HeadsetSnapshot(connection: .idle)
@@ -58,11 +70,22 @@ public struct HeadsetSnapshot: Sendable, Equatable {
                 receiverFirmware: "2.1.0",
                 batteryPercent: 82,
                 isCharging: false,
-                transport: .receiver
+                transport: .receiver,
+                receiverDetected: true
             ),
             capabilities: capabilities,
             values: values,
+            readiness: Dictionary(uniqueKeysWithValues: capabilities.map { ($0, .ready) }),
+            valueConfidence: Dictionary(uniqueKeysWithValues: capabilities.map { ($0, .simulated) }),
             lastUpdated: .now
         )
+    }
+
+    public func readiness(for key: HeadsetSettingKey) -> CapabilityReadiness {
+        readiness[key] ?? .unavailable
+    }
+
+    public func confidence(for key: HeadsetSettingKey) -> ValueConfidence {
+        valueConfidence[key] ?? .unknown
     }
 }

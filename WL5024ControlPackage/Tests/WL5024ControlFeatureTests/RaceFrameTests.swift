@@ -25,4 +25,18 @@ struct RaceFrameTests {
         let response = RaceFrame(opcode: 0x2C83, payload: Data([0x02, 0x00, 0x00])).encoded
         #expect(try WL5024Command.getAutomaticMedia.decodeAutomaticMedia(from: response) == false)
     }
+
+    @Test func matcherRejectsUnsolicitedAndWrongModuleFrames() {
+        let matcher = WL5024Command.getAutomaticMedia.transaction.expectedResponse
+        let unsolicited = RaceFrame(opcode: 0x0E17, payload: Data([0x03, 0x01])).encoded
+        let wrongModule = RaceFrame(opcode: 0x2C83, payload: Data([0x09, 0x00, 0x01])).encoded
+        let matching = RaceFrame(opcode: 0x2C83, payload: Data([0x02, 0x00, 0x01])).encoded
+
+        #expect(!matcher.matches(unsolicited))
+        #expect(!matcher.matches(wrongModule))
+        #expect(matcher.matches(matching))
+        #expect(TransactionResponseRouter.classify(unsolicited, pending: matcher) == .unsolicited)
+        #expect(TransactionResponseRouter.classify(wrongModule, pending: matcher) == .unsolicited)
+        #expect(TransactionResponseRouter.classify(matching, pending: matcher) == .matched)
+    }
 }
