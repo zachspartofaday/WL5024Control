@@ -41,7 +41,17 @@ struct RaceFrameTests {
         try WL5024Command.setPreferenceByte(module: 8, value: 1)
             .validatePreferenceAcknowledgement(acknowledgement)
 
-        for payload in [Data([0, 8]), Data([1, 8, 0]), Data([0, 9, 0])] {
+        let rejected = RaceFrame(
+            packetType: .response,
+            opcode: 0x2C82,
+            payload: Data([1, 8, 0])
+        ).encoded
+        #expect(throws: HeadsetError.commandRejected) {
+            try WL5024Command.setPreferenceByte(module: 8, value: 1)
+                .validatePreferenceAcknowledgement(rejected)
+        }
+
+        for payload in [Data([0, 8]), Data([0, 9, 0])] {
             let invalid = RaceFrame(packetType: .response, opcode: 0x2C82, payload: payload).encoded
             #expect(throws: HeadsetError.malformedResponse) {
                 try WL5024Command.setPreferenceByte(module: 8, value: 1)
@@ -73,6 +83,14 @@ struct RaceFrameTests {
                 payload: Data([0])
             ).encoded
             try setter.validateSimpleAcknowledgement(acknowledgement)
+            let rejected = RaceFrame(
+                packetType: .response,
+                opcode: setOpcode,
+                payload: Data([1])
+            ).encoded
+            #expect(throws: HeadsetError.commandRejected) {
+                try setter.validateSimpleAcknowledgement(rejected)
+            }
         }
     }
 
@@ -261,7 +279,12 @@ struct RaceFrameTests {
         let valid = RaceFrame(packetType: .response, opcode: 0x0020, payload: Data([0])).encoded
         try WL5024Command.setWearDetection(0).validateWearDetectionAcknowledgement(valid)
 
-        for payload in [Data([1]), Data(), Data([0, 0])] {
+        let rejected = RaceFrame(packetType: .response, opcode: 0x0020, payload: Data([1])).encoded
+        #expect(throws: HeadsetError.commandRejected) {
+            try WL5024Command.setWearDetection(0).validateWearDetectionAcknowledgement(rejected)
+        }
+
+        for payload in [Data(), Data([0, 0])] {
             let invalid = RaceFrame(packetType: .response, opcode: 0x0020, payload: payload).encoded
             #expect(throws: HeadsetError.malformedResponse) {
                 try WL5024Command.setWearDetection(0).validateWearDetectionAcknowledgement(invalid)

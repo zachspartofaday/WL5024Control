@@ -138,8 +138,11 @@ public enum WL5024Command: Sendable, Equatable {
         let frame = try RaceFrame(decoding: response)
         guard frame.packetType == .response,
               frame.opcode == 0x0020,
-              Array(frame.payload) == [0] else {
+              frame.payload.count == 1 else {
             throw HeadsetError.malformedResponse
+        }
+        guard frame.payload[frame.payload.startIndex] == 0 else {
+            throw HeadsetError.commandRejected
         }
     }
 
@@ -173,15 +176,15 @@ public enum WL5024Command: Sendable, Equatable {
             throw HeadsetError.malformedResponse
         }
         let frame = try RaceFrame(decoding: response)
+        let bytes = Array(frame.payload)
         guard frame.packetType == .response,
               frame.opcode == Self.setPreferenceOpcode,
-              Array(frame.payload) == [
-                0,
-                UInt8(truncatingIfNeeded: module),
-                UInt8(truncatingIfNeeded: module >> 8),
-              ] else {
+              bytes.count == 3,
+              bytes[1] == UInt8(truncatingIfNeeded: module),
+              bytes[2] == UInt8(truncatingIfNeeded: module >> 8) else {
             throw HeadsetError.malformedResponse
         }
+        guard bytes[0] == 0 else { throw HeadsetError.commandRejected }
     }
 
     public func decodeStrictBoolean(from response: Data) throws -> Bool {
@@ -294,8 +297,11 @@ public enum WL5024Command: Sendable, Equatable {
         let frame = try RaceFrame(decoding: response)
         guard frame.packetType == .response,
               frame.opcode == opcode,
-              Array(frame.payload) == [0] else {
+              frame.payload.count == 1 else {
             throw HeadsetError.malformedResponse
+        }
+        guard frame.payload[frame.payload.startIndex] == 0 else {
+            throw HeadsetError.commandRejected
         }
     }
 

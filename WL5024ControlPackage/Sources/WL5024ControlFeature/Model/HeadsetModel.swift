@@ -159,7 +159,22 @@ public final class HeadsetModel {
             return Task {}
         }
         failure = nil
-        return enqueue(.reconnect)
+        // Recovery must run before work preserved behind the command that
+        // failed, otherwise that work immediately retries the broken link.
+        if activeCommand?.isReconnect == true, let commandTask {
+            return commandTask
+        }
+        queuedCommands.removeAll(where: \.isReconnect)
+        queuedCommands.insert(.reconnect, at: 0)
+        updatePendingSettings()
+
+        if let commandTask { return commandTask }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await drainCommandQueue()
+        }
+        commandTask = task
+        return task
     }
 
     @discardableResult
@@ -334,7 +349,7 @@ public final class HeadsetModel {
         case .timeout:
             recovery = .retry
             message = "Keep the headset nearby, then try the command again."
-        case .malformedResponse, .readbackMismatch:
+        case .commandRejected, .malformedResponse, .readbackMismatch:
             recovery = .retry
             message = "Try again. If the problem continues, export a Diagnostics log."
         case .busy:
@@ -384,6 +399,10 @@ private enum QueuedCommand: Equatable {
 
     var isDiscovery: Bool {
         if case .discovery = self { true } else { false }
+    }
+
+    var isReconnect: Bool {
+        if case .reconnect = self { true } else { false }
     }
 
     var name: String {

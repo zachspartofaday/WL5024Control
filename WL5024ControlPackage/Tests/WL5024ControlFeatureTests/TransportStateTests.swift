@@ -264,19 +264,52 @@ struct TransportStateTests {
         #expect(controller.currentSnapshot.lastUpdated != nil)
     }
 
-    @Test @MainActor func invalidAcknowledgementStopsBeforeReadback() async {
+    @Test @MainActor func negativeAcknowledgementStopsBeforeReadbackAndPreservesConfirmedValue() async throws {
         let transport = FakeHeadsetTransport(responses: [
-            .success(wearResponse(flags: 0x0067)),
+            .success(wearResponse(flags: 0x0000)),
+            .success(wearAcknowledgement(status: 0)),
+            .success(wearResponse(flags: 0x0002)),
+            .success(wearResponse(flags: 0x0002)),
             .success(wearAcknowledgement(status: 1)),
         ])
         let controller = LiveHeadsetController(transport: transport)
         _ = await controller.start()
 
-        await #expect(throws: HeadsetError.malformedResponse) {
+        _ = try await controller.set(.automaticMedia, value: .boolean(true))
+        await #expect(throws: HeadsetError.commandRejected) {
             try await controller.set(.automaticMedia, value: .boolean(false))
         }
-        #expect(transport.transactions.count == 2)
-        #expect(controller.currentSnapshot.values[.automaticMedia] == nil)
+        #expect(transport.transactions.count == 5)
+        #expect(controller.currentSnapshot.values[.automaticMedia] == .boolean(true))
+        #expect(controller.currentSnapshot.confidence(for: .automaticMedia) == .deviceConfirmed)
+    }
+
+    @Test @MainActor func malformedFirstAcknowledgementReadsBackAppliedState() async throws {
+        let malformedAcknowledgement = RaceFrame(
+            packetType: .response,
+            opcode: 0x0020,
+            payload: Data([0, 0])
+        ).encoded
+        let transport = FakeHeadsetTransport(responses: [
+            .success(wearResponse(flags: 0x0000)),
+            .success(wearAcknowledgement(status: 0)),
+            .success(wearResponse(flags: 0x0002)),
+            .success(wearResponse(flags: 0x0002)),
+            .success(malformedAcknowledgement),
+            .success(wearResponse(flags: 0x0000)),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        _ = try await controller.set(.automaticMedia, value: .boolean(true))
+        await #expect(throws: HeadsetError.transport(
+            "The automaticMedia change could not be confirmed (observed boolean(false)). Check the setting and try again."
+        )) {
+            try await controller.set(.automaticMedia, value: .boolean(false))
+        }
+        #expect(transport.transactions.count == 6)
+        #expect(controller.currentSnapshot.values[.automaticMedia] == .boolean(false))
+        #expect(controller.currentSnapshot.confidence(for: .automaticMedia) == .deviceConfirmed)
     }
 
     @Test func shippingRegistryContainsOnlyCompleteRecoveredBluetoothContracts() {
@@ -412,6 +445,7 @@ struct TransportStateTests {
     @Test @MainActor func readOnlyDiscoveryDecodesCompositeAndSmartSwitchGetters() async throws {
         let responses: [Result<Data, any Error>] = (0...265).map { index in
             switch index {
+            case 49: .success(preferenceResponse(module: 0x0031, value: [1, 2, 2, 0]))
             case 256: .success(wearResponse(flags: 0x0067))
             case 262: .success(smartSwitchResponse(false))
             default: .failure(HeadsetError.timeout)
@@ -425,11 +459,12 @@ struct TransportStateTests {
         let result = try await controller.discoverReadOnly { finalProgress = $0 }
         #expect(transport.transactions == ReadOnlyDiscoveryPlan.probes.map(\.transaction))
         #expect(result.summary.queryCount == 266)
-        #expect(result.summary.responseCount == 2)
-        #expect(result.summary.timeoutCount == 264)
-        #expect(result.summary.decodedSettingCount == 7)
+        #expect(result.summary.responseCount == 3)
+        #expect(result.summary.timeoutCount == 263)
+        #expect(result.summary.decodedSettingCount == 8)
         #expect(result.update.snapshot.values[.automaticMedia] == .boolean(true))
         #expect(result.update.snapshot.values[.smartSwitch] == .boolean(false))
+        #expect(result.update.snapshot.values[.leAudioFeatureMode] == .integer(2))
         #expect(finalProgress?.completed == 266)
     }
 

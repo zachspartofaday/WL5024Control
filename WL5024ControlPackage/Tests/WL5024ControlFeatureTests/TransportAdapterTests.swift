@@ -110,6 +110,75 @@ struct TransportAdapterTests {
         )))
     }
 
+    @Test func bluetoothAdapterQuarantinesTimedOutMatcherUntilLateReplyDrains() async throws {
+        let source = FakeBluetoothEventSource()
+        let transport = BLETransport(source: source)
+        let collector = TransportUpdateCollector()
+        transport.configure { update in
+            MainActor.assumeIsolated { collector.updates.append(update) }
+        }
+        transport.start()
+        source.emit(.ready(BluetoothConnectionMetadata(
+            name: "WL5024",
+            identifier: UUID(),
+            diagnosticDetails: [:]
+        )))
+
+        let wearTransaction = WL5024Command.getWearDetection.transaction
+        await #expect(throws: HeadsetError.timeout) {
+            try await transport.transact(wearTransaction, timeout: .milliseconds(1))
+        }
+        #expect(source.writes == [wearTransaction.request])
+
+        await #expect(throws: HeadsetError.transport(
+            "A previous request may still reply. Reconnect the headset before retrying this command."
+        )) {
+            try await transport.transact(wearTransaction, timeout: .seconds(1))
+        }
+        #expect(source.writes == [wearTransaction.request])
+
+        // A non-conflicting request may proceed while the timed-out matcher is
+        // quarantined. Its pending transaction must not consume the late wear
+        // response, which instead drains the quarantine as unsolicited data.
+        let preferenceTransaction = WL5024Command.getPreference(module: 1).transaction
+        let preferenceTask = Task {
+            try await transport.transact(preferenceTransaction, timeout: .seconds(1))
+        }
+        await Task.yield()
+        let lateWearResponse = RaceFrame(
+            packetType: .response,
+            opcode: 0x0021,
+            payload: Data([0, 0x01, 0x00])
+        ).encoded
+        source.emit(.received(lateWearResponse))
+        let preferenceResponse = RaceFrame(
+            packetType: .response,
+            opcode: 0x2C83,
+            payload: Data([0, 1, 0, 1])
+        ).encoded
+        source.emit(.received(preferenceResponse))
+
+        #expect(try await preferenceTask.value == preferenceResponse)
+        #expect(collector.updates.contains(.unsolicitedBluetooth(lateWearResponse)))
+
+        let retryTask = Task {
+            try await transport.transact(wearTransaction, timeout: .seconds(1))
+        }
+        await Task.yield()
+        let freshWearResponse = RaceFrame(
+            packetType: .response,
+            opcode: 0x0021,
+            payload: Data([0, 0x02, 0x00])
+        ).encoded
+        source.emit(.received(freshWearResponse))
+        #expect(try await retryTask.value == freshWearResponse)
+        #expect(source.writes == [
+            wearTransaction.request,
+            preferenceTransaction.request,
+            wearTransaction.request,
+        ])
+    }
+
     @Test func bluetoothAdapterPreservesDispatchedFailureState() async {
         let source = FakeBluetoothEventSource()
         let transport = BLETransport(source: source)

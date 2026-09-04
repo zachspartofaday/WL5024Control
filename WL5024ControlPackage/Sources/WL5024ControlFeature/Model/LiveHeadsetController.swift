@@ -216,6 +216,17 @@ public final class LiveHeadsetController: HeadsetController {
                     )
                 }
                 throw CancellationError()
+            } catch HeadsetError.malformedResponse {
+                // The write received an attributable response, but its shape
+                // cannot prove success or rejection. Treat device state as
+                // uncertain even for the first step and recover by read-back.
+                throw await writeRecoveryError(
+                    key: key,
+                    qualification: qualification,
+                    step: index,
+                    earlierStepAcknowledged: index > 0,
+                    underlying: HeadsetError.malformedResponse
+                )
             } catch {
                 // A later step failed after earlier steps were acknowledged:
                 // observe and report partial device state (AUD-007). No
@@ -459,6 +470,7 @@ public final class LiveHeadsetController: HeadsetController {
         switch module {
         case 1: key = .autoPowerOff
         case 8: key = .advancedPassthrough
+        case 0x0031: key = .leAudioFeatureMode
         default: return nil
         }
         guard let definition = ShippingSettingReads.all[key] else { return nil }

@@ -175,6 +175,32 @@ struct HeadsetModelTests {
         #expect(model.failure == nil)
     }
 
+    @Test func reconnectRunsBeforeCommandsPreservedBehindFailure() async {
+        let controller = FailOnceController(
+            failKey: .bass,
+            failure: .transport("fixture link failure")
+        )
+        let model = HeadsetModel(demoMode: true, controller: controller)
+        await model.start()
+
+        model.set(.bass, to: .integer(1))
+        let treble = model.set(.treble, to: .integer(2))
+        await treble.value
+
+        #expect(controller.operations == [.start, .set(.bass)])
+        await model.reconnect().value
+
+        #expect(controller.operations == [
+            .start,
+            .set(.bass),
+            .stop,
+            .start,
+            .set(.treble),
+        ])
+        #expect(model.value(for: .treble) == .integer(2))
+        #expect(model.failure == nil)
+    }
+
     @Test func dismissAbandonsRetryAndResumesQueue() async {
         let controller = FailOnceController(failKey: .bass)
         let model = HeadsetModel(demoMode: true, controller: controller)
@@ -277,6 +303,12 @@ private final class BlockingDiscoveryController: HeadsetController {
 
 @MainActor
 private final class FailOnceController: HeadsetController {
+    enum Operation: Equatable {
+        case start
+        case stop
+        case set(HeadsetSettingKey)
+    }
+
     struct Write: Equatable {
         let key: HeadsetSettingKey
         let value: SettingValue
@@ -287,26 +319,36 @@ private final class FailOnceController: HeadsetController {
     private let continuation: AsyncStream<HeadsetEvent>.Continuation
     private var revision: UInt64 = 0
     private(set) var writes: [Write] = []
+    private(set) var operations: [Operation] = []
     private let failKey: HeadsetSettingKey
+    private let failure: HeadsetError
     private var didFail = false
 
-    init(failKey: HeadsetSettingKey) {
+    init(failKey: HeadsetSettingKey, failure: HeadsetError = .timeout) {
         self.failKey = failKey
+        self.failure = failure
         let pair = AsyncStream.makeStream(of: HeadsetEvent.self, bufferingPolicy: .bufferingNewest(10))
         stream = pair.stream
         continuation = pair.continuation
     }
 
     func events() async -> AsyncStream<HeadsetEvent> { stream }
-    func start() async -> HeadsetStateUpdate { publish() }
-    func stop() async -> HeadsetStateUpdate { publish() }
+    func start() async -> HeadsetStateUpdate {
+        operations.append(.start)
+        return publish()
+    }
+    func stop() async -> HeadsetStateUpdate {
+        operations.append(.stop)
+        return publish()
+    }
     func refresh() async throws -> HeadsetStateUpdate { publish() }
     func set(_ key: HeadsetSettingKey, value: SettingValue) async throws -> HeadsetStateUpdate {
         await Task.yield()
         writes.append(Write(key: key, value: value))
+        operations.append(.set(key))
         if key == failKey, !didFail {
             didFail = true
-            throw HeadsetError.timeout
+            throw failure
         }
         snapshot.values[key] = value
         return publish()

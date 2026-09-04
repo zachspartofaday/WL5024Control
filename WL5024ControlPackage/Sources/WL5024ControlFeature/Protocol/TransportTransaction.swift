@@ -1,6 +1,6 @@
 import Foundation
 
-public struct RaceResponseMatcher: Sendable, Equatable {
+public struct RaceResponseMatcher: Sendable, Hashable {
     public let opcode: UInt16
     public let module: UInt16?
 

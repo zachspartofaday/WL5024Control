@@ -14,6 +14,7 @@ final class BLETransport: RawHeadsetTransport {
     private var pendingRequestDispatched = false
     private var pendingWriteAcknowledged = false
     private var timeoutTask: Task<Void, Never>?
+    private var quarantinedMatchers: Set<RaceResponseMatcher> = []
 
     init(source: any BluetoothEventSourcing = CoreBluetoothEventSource()) {
         self.source = source
@@ -35,6 +36,7 @@ final class BLETransport: RawHeadsetTransport {
         failPending(with: CancellationError())
         source.stop()
         isReady = false
+        quarantinedMatchers.removeAll()
         transition(.stop)
     }
 
@@ -53,6 +55,21 @@ final class BLETransport: RawHeadsetTransport {
     ) async throws -> Data {
         guard isReady, source.isReady else { throw HeadsetError.disconnected }
         guard pendingContinuation == nil else { throw HeadsetError.busy }
+        guard !quarantinedMatchers.contains(transaction.expectedResponse) else {
+            DiagnosticRecorder.shared.record(
+                "bluetooth-tx",
+                "RACE request blocked pending late-response drain",
+                details: [
+                    "opcode": String(format: "0x%04X", transaction.expectedResponse.opcode),
+                    "module": transaction.expectedResponse.module.map {
+                        String(format: "0x%04X", $0)
+                    } ?? "none",
+                ]
+            )
+            throw HeadsetError.transport(
+                "A previous request may still reply. Reconnect the headset before retrying this command."
+            )
+        }
 
         DiagnosticRecorder.shared.record(
             "bluetooth-tx",
@@ -107,6 +124,8 @@ final class BLETransport: RawHeadsetTransport {
             updateHandler?(.searching(.bluetooth))
         case .ready(let metadata):
             isReady = true
+            // A new CoreBluetooth connection is a fresh protocol session.
+            quarantinedMatchers.removeAll()
             updateHandler?(.connectedBluetooth(name: metadata.name, identifier: metadata.identifier))
         case .disconnected(let identifier):
             isReady = false
@@ -119,6 +138,16 @@ final class BLETransport: RawHeadsetTransport {
             isReady = false
             updateHandler?(.bluetoothUnavailable)
         case .received(let data):
+            if let expiredMatcher = quarantinedMatchers.first(where: { $0.matches(data) }) {
+                quarantinedMatchers.remove(expiredMatcher)
+                DiagnosticRecorder.shared.record(
+                    "bluetooth-rx",
+                    "Late response drained",
+                    details: ["bytes": DiagnosticRecorder.hex(data)]
+                )
+                updateHandler?(.unsolicitedBluetooth(data))
+                return
+            }
             guard pendingContinuation != nil else {
                 updateHandler?(.unsolicitedBluetooth(data))
                 return
@@ -158,6 +187,15 @@ final class BLETransport: RawHeadsetTransport {
     }
 
     private func failPending(with error: any Error) {
+        // If a request left CoreBluetooth but its attributable response never
+        // arrived while this session remains live, the protocol has no request
+        // identifier that can separate a late response from an identical retry.
+        if pendingRequestDispatched,
+           isReady,
+           source.isReady,
+           let pendingMatcher {
+            quarantinedMatchers.insert(pendingMatcher)
+        }
         guard pendingTracksDispatchFailure, pendingRequestDispatched else {
             finishPending(with: .failure(error))
             return
