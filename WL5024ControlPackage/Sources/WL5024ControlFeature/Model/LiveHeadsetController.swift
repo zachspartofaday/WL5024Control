@@ -179,6 +179,17 @@ public final class LiveHeadsetController: HeadsetController {
                 try await transport.transact(preparation, timeout: .seconds(3))
             )
         }
+        if ShippingWriteQualifications.wearKeys.contains(key),
+           !preparationResponses.isEmpty {
+            let observed = try qualification.readBackDecoder(preparationResponses)
+            try applyConfirmedReadBack(
+                key: key,
+                storedValue: observed,
+                responses: preparationResponses
+            )
+            snapshot.lastUpdated = .now
+            _ = publish()
+        }
         let writeTransactions = try qualification.writeTransactions(
             for: value,
             preparationResponses: preparationResponses

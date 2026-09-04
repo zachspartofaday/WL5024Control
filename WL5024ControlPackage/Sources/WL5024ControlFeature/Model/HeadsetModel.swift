@@ -81,6 +81,7 @@ public final class HeadsetModel {
 
     @discardableResult
     public func refresh() -> Task<Void, Never> {
+        guard !rejectWhileAwaitingRecovery(command: "refresh") else { return Task {} }
         guard discoveryState != .running else {
             rejectDuringDiscovery(command: "refresh")
             return Task {}
@@ -90,6 +91,7 @@ public final class HeadsetModel {
 
     @discardableResult
     public func set(_ key: HeadsetSettingKey, to value: SettingValue) -> Task<Void, Never> {
+        guard !rejectWhileAwaitingRecovery(command: "set.\(key.rawValue)") else { return Task {} }
         guard discoveryState != .running else {
             rejectDuringDiscovery(command: "set.\(key.rawValue)")
             return Task {}
@@ -103,6 +105,7 @@ public final class HeadsetModel {
 
     @discardableResult
     public func perform(_ key: HeadsetSettingKey) -> Task<Void, Never> {
+        guard !rejectWhileAwaitingRecovery(command: "action.\(key.rawValue)") else { return Task {} }
         guard discoveryState != .running else {
             rejectDuringDiscovery(command: "action.\(key.rawValue)")
             return Task {}
@@ -121,6 +124,16 @@ public final class HeadsetModel {
             details: ["command": command]
         )
         present(.busy, retrying: nil)
+    }
+
+    private func rejectWhileAwaitingRecovery(command: String) -> Bool {
+        guard retryCommand != nil else { return false }
+        DiagnosticRecorder.shared.record(
+            "command",
+            "Command rejected while recovery is pending",
+            details: ["command": command]
+        )
+        return true
     }
 
     public func value(for key: HeadsetSettingKey) -> SettingValue? {
@@ -159,6 +172,9 @@ public final class HeadsetModel {
             return Task {}
         }
         failure = nil
+        // Reconnect is an explicit recovery choice that abandons the exact
+        // failed command while preserving work that was queued behind it.
+        retryCommand = nil
         // Recovery must run before work preserved behind the command that
         // failed, otherwise that work immediately retries the broken link.
         if activeCommand?.isReconnect == true, let commandTask {
@@ -179,6 +195,7 @@ public final class HeadsetModel {
 
     @discardableResult
     public func runReadOnlyDiscovery() -> Task<Void, Never> {
+        guard !rejectWhileAwaitingRecovery(command: "read-only-discovery") else { return Task {} }
         guard discoveryState != .running else { return commandTask ?? Task {} }
         discoveryState = .running
         discoveryProgress = nil
@@ -215,6 +232,14 @@ public final class HeadsetModel {
 
     @discardableResult
     private func enqueue(_ command: QueuedCommand) -> Task<Void, Never> {
+        guard retryCommand == nil || command.isReconnect else {
+            DiagnosticRecorder.shared.record(
+                "command",
+                "Queue intake blocked while recovery is pending",
+                details: ["command": command.name]
+            )
+            return commandTask ?? Task {}
+        }
         if case .set(let key, _) = command,
            let existingIndex = queuedCommands.lastIndex(where: { $0.settingKey == key }) {
             queuedCommands[existingIndex] = command

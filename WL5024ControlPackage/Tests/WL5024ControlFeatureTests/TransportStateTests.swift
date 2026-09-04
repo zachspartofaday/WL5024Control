@@ -572,20 +572,36 @@ struct TransportStateTests {
         #expect(snapshot.connection == .searching)
     }
 
-    @Test @MainActor func sensitivityWriteWhileQuickPauseOffCannotDiverge() async {
-        // Preparation returns mode-0 flags; encoder must reject before any write.
+    @Test @MainActor func sensitivityWriteWhileQuickPauseOffCannotDiverge() async throws {
+        // Establish a confirmed enabled value, then observe mode 0 during the
+        // rejected sensitivity preparation. The observed composite state must
+        // replace every stale wear projection even though no write follows.
         let transport = FakeHeadsetTransport(responses: [
+            .success(wearResponse(flags: 0x0010)),
+            .success(wearAcknowledgement(status: 0)),
+            .success(wearResponse(flags: 0x0020)),
             .success(wearResponse(flags: 0x0000)),
         ])
         let controller = LiveHeadsetController(transport: transport)
         _ = await controller.start()
 
+        let enabled = try await controller.set(.quickPause, value: .boolean(true)).snapshot
+        #expect(enabled.values[.quickPause] == .boolean(true))
+
         await #expect(throws: HeadsetError.invalidValue(.quickPauseSensitivity)) {
             try await controller.set(.quickPauseSensitivity, value: .choice("sensitive"))
         }
-        #expect(transport.transactions == [WL5024Command.getWearDetection.transaction])
-        #expect(controller.currentSnapshot.values[.quickPauseSensitivity] == nil)
-        #expect(controller.currentSnapshot.values[.quickPause] == nil)
+        #expect(transport.transactions == [
+            WL5024Command.getWearDetection.transaction,
+            WL5024Command.setWearDetection(0x0010).transaction,
+            WL5024Command.getWearDetection.transaction,
+            WL5024Command.getWearDetection.transaction,
+        ])
+        #expect(controller.currentSnapshot.values[.quickPauseSensitivity] == .choice("normal"))
+        #expect(controller.currentSnapshot.values[.quickPause] == .boolean(false))
+        for key in ShippingWriteQualifications.wearKeys {
+            #expect(controller.currentSnapshot.confidence(for: key) == .deviceConfirmed)
+        }
     }
 
     @Test @MainActor func quickPauseTogglePublishesAllCompositeProjections() async throws {

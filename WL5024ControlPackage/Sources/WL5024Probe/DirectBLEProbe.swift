@@ -112,6 +112,7 @@ private extension DirectBLEProbe {
         private var nextProbeIndex = 0
         private var pendingProbe: Probe?
         private var pendingStartedAt: TimeInterval?
+        private var responseQuarantine = RaceResponseQuarantine()
         private var responseCount = 0
         private var timeoutCount = 0
         private var unsolicitedCount = 0
@@ -213,6 +214,8 @@ private extension DirectBLEProbe {
             guard let pendingProbe else { return }
             timeoutCount += 1
             log("TIMEOUT", "\(pendingProbe.name) after \(format(options.responseTimeout))s")
+            responseQuarantine.insert(pendingProbe.transaction.expectedResponse)
+            responseTimer = nil
             self.pendingProbe = nil
             pendingStartedAt = nil
             scheduleAdvance()
@@ -233,6 +236,13 @@ private extension DirectBLEProbe {
             }
 
             let probe = probes[nextProbeIndex]
+            guard !responseQuarantine.contains(probe.transaction.expectedResponse) else {
+                fail(
+                    "Cannot safely run \(probe.name): an earlier matching response may still arrive. "
+                        + "Reconnect and rerun the probe."
+                )
+                return
+            }
             nextProbeIndex += 1
             pendingProbe = probe
             pendingStartedAt = ProcessInfo.processInfo.systemUptime
@@ -335,6 +345,12 @@ private extension DirectBLEProbe {
                 frameDescription = "not a complete RACE frame"
             }
             log("RX", "\(hex(data)) | \(frameDescription)")
+
+            if responseQuarantine.drain(matching: data) {
+                unsolicitedCount += 1
+                log("LATE", "drained response from a timed-out request")
+                return
+            }
 
             guard let pendingProbe else {
                 unsolicitedCount += 1
@@ -619,7 +635,11 @@ extension DirectBLEProbe.Runner: CBPeripheralDelegate {
         error: (any Error)?
     ) {
         if let error {
-            log("GATT-ERROR", "write \(characteristic.uuid.uuidString): \(error.localizedDescription)")
+            let probeName = pendingProbe?.name ?? "unknown request"
+            fail(
+                "GATT write failed for \(probeName) on \(characteristic.uuid.uuidString): "
+                    + error.localizedDescription
+            )
         } else {
             log("GATT-ACK", characteristic.uuid.uuidString)
         }

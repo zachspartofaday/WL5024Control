@@ -221,7 +221,7 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
                 )
                 self.failSetup("The Bluetooth connection attempt timed out.")
             } catch is CancellationError {
-                // Connection, failure, or source shutdown cancelled the watchdog.
+                // Readiness, failure, or source shutdown cancelled the watchdog.
             } catch {
                 guard let self,
                       self.peripheral?.identifier == candidate.identifier,
@@ -363,8 +363,6 @@ extension CoreBluetoothEventSource: @preconcurrency CBCentralManagerDelegate {
             central.cancelPeripheralConnection(peripheral)
             return
         }
-        connectionTimeoutTask?.cancel()
-        connectionTimeoutTask = nil
         emit(.lifecycle(.connected))
         DiagnosticRecorder.shared.record(
             "bluetooth",

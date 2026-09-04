@@ -188,6 +188,14 @@ struct HeadsetModelTests {
         await treble.value
 
         #expect(controller.operations == [.start, .set(.bass)])
+        let originalFailure = model.failure
+        await model.set(.mid, to: .integer(3)).value
+        await model.refresh().value
+        await model.runReadOnlyDiscovery().value
+        #expect(controller.operations == [.start, .set(.bass)])
+        #expect(model.failure == originalFailure)
+        #expect(model.discoveryState == .idle)
+
         await model.reconnect().value
 
         #expect(controller.operations == [

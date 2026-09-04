@@ -3,6 +3,43 @@ import Testing
 @testable import WL5024ControlFeature
 
 struct RaceFrameTests {
+    @Test func lateResponseQuarantineBlocksAndDrainsOnlyMatchingResponses() {
+        let smartSwitch = RaceResponseMatcher(opcode: 0x0901, module: 6)
+        let preference = RaceResponseMatcher(opcode: 0x2C83, module: 8)
+        var quarantine = RaceResponseQuarantine()
+        quarantine.insert(smartSwitch)
+
+        #expect(quarantine.contains(smartSwitch))
+        #expect(!quarantine.contains(preference))
+
+        let ambiguous = RaceFrame(
+            packetType: .response,
+            opcode: 0x0901,
+            payload: Data([0])
+        ).encoded
+        let drainedAmbiguous = quarantine.drain(matching: ambiguous)
+        #expect(!drainedAmbiguous)
+        #expect(quarantine.contains(smartSwitch))
+
+        let unrelated = RaceFrame(
+            packetType: .response,
+            opcode: 0x2C83,
+            payload: Data([0, 8, 0, 1])
+        ).encoded
+        let drainedUnrelated = quarantine.drain(matching: unrelated)
+        #expect(!drainedUnrelated)
+        #expect(quarantine.contains(smartSwitch))
+
+        let late = RaceFrame(
+            packetType: .response,
+            opcode: 0x0901,
+            payload: Data([6, 0, 0, 1])
+        ).encoded
+        let drainedLate = quarantine.drain(matching: late)
+        #expect(drainedLate)
+        #expect(!quarantine.contains(smartSwitch))
+    }
+
     @Test func encodesRecoveredWearDetectionPackets() {
         #expect(Array(WL5024Command.getWearDetection.frame.encoded) == [
             0x05, 0x5A, 0x02, 0x00, 0x21, 0x00,

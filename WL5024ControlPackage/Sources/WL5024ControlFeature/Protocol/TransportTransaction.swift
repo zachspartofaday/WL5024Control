@@ -26,6 +26,36 @@ public struct RaceResponseMatcher: Sendable, Hashable {
     }
 }
 
+/// Tracks response shapes from requests that ended without an attributable
+/// response. RACE packets carry no request identifier, so a matching late
+/// packet must be drained before an identical request can be issued safely.
+public struct RaceResponseQuarantine: Sendable {
+    private var matchers: Set<RaceResponseMatcher> = []
+
+    public init() {}
+
+    public func contains(_ matcher: RaceResponseMatcher) -> Bool {
+        matchers.contains(matcher)
+    }
+
+    public mutating func insert(_ matcher: RaceResponseMatcher) {
+        matchers.insert(matcher)
+    }
+
+    @discardableResult
+    public mutating func drain(matching data: Data) -> Bool {
+        guard let matcher = matchers.first(where: { $0.matches(data) }) else {
+            return false
+        }
+        matchers.remove(matcher)
+        return true
+    }
+
+    public mutating func removeAll() {
+        matchers.removeAll()
+    }
+}
+
 public struct TransportTransaction: Sendable, Equatable {
     public let request: Data
     public let expectedResponse: RaceResponseMatcher
