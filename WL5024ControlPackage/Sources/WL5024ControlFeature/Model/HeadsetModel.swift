@@ -325,7 +325,7 @@ public final class HeadsetModel {
     }
 
     private func present(_ error: HeadsetError, retrying command: QueuedCommand?) {
-        let recovery: RecoveryAction
+        var recovery: RecoveryAction
         let message: String
         switch error {
         case .disconnected:
@@ -349,6 +349,13 @@ public final class HeadsetModel {
         case .transport:
             recovery = .reconnect
             message = "Reconnect the headset. Technical details were added to Diagnostics."
+        }
+
+        // A Retry button is valid only when there is an exact command to
+        // replay. Busy rejections during exclusive discovery deliberately do
+        // not enqueue work, so their only honest recovery is dismissal.
+        if recovery == .retry, command == nil {
+            recovery = .dismiss
         }
 
         failure = HeadsetFailure(

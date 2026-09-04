@@ -148,6 +148,11 @@ public final class LiveHeadsetController: HeadsetController {
             snapshot.lastUpdated = .now
             return publish()
         }
+        // The failed reads mutated the authoritative snapshot by removing
+        // values. Publish that invalidation before surfacing the error so
+        // observers cannot retain the prior successful refresh as current.
+        snapshot.lastUpdated = nil
+        _ = publish()
         throw firstError ?? HeadsetError.timeout
     }
 
@@ -205,18 +210,35 @@ public final class LiveHeadsetController: HeadsetController {
             throw CancellationError()
         }
         var readBackResponses: [Data] = []
-        for transaction in qualification.readBackTransactions {
-            try Task.checkCancellation()
-            readBackResponses.append(try await transport.transact(transaction, timeout: .seconds(3)))
+        let storedValue: SettingValue
+        do {
+            for transaction in qualification.readBackTransactions {
+                try Task.checkCancellation()
+                readBackResponses.append(try await transport.transact(transaction, timeout: .seconds(3)))
+            }
+            storedValue = try qualification.readBackDecoder(readBackResponses)
+            try applyConfirmedReadBack(
+                key: key,
+                storedValue: storedValue,
+                responses: readBackResponses
+            )
+        } catch is CancellationError {
+            invalidateUnverifiedState(for: key)
+            _ = publish()
+            throw CancellationError()
+        } catch {
+            invalidateUnverifiedState(for: key)
+            _ = publish()
+            throw HeadsetError.transport(
+                "The \(key.rawValue) change may have been applied, but its current value could not be read. Refresh or reconnect before trying again."
+            )
         }
-        let storedValue = try qualification.readBackDecoder(readBackResponses)
+        snapshot.lastUpdated = .now
+        let update = publish()
         guard qualification.comparison(value, storedValue) else {
             throw HeadsetError.readbackMismatch(key)
         }
-        snapshot.values[key] = storedValue
-        snapshot.valueConfidence[key] = .deviceConfirmed
-        snapshot.lastUpdated = .now
-        return publish()
+        return update
     }
 
     public func perform(_ key: HeadsetSettingKey) async throws -> HeadsetStateUpdate {
@@ -436,8 +458,11 @@ public final class LiveHeadsetController: HeadsetController {
                 )
             }
             let observed = try qualification.readBackDecoder(readBackResponses)
-            snapshot.values[key] = observed
-            snapshot.valueConfidence[key] = .deviceConfirmed
+            try applyConfirmedReadBack(
+                key: key,
+                storedValue: observed,
+                responses: readBackResponses
+            )
             snapshot.lastUpdated = .now
             _ = publish()
             DiagnosticRecorder.shared.record(
@@ -454,8 +479,12 @@ public final class LiveHeadsetController: HeadsetController {
                 "Part of the \(key.rawValue) change was applied (observed \(String(describing: observed))). Check the setting and try again."
             )
         } catch is CancellationError {
+            invalidateUnverifiedState(for: key)
+            _ = publish()
             return CancellationError()
         } catch {
+            invalidateUnverifiedState(for: key)
+            _ = publish()
             DiagnosticRecorder.shared.record(
                 "protocol-write",
                 "Multi-step write failed with unreadable partial state",
@@ -463,9 +492,61 @@ public final class LiveHeadsetController: HeadsetController {
                     "setting": key.rawValue,
                     "failedStep": step.description,
                     "error": underlying.localizedDescription,
+                    "readBackError": error.localizedDescription,
                 ]
             )
-            return underlying
+            return HeadsetError.transport(
+                "Part of the \(key.rawValue) change may have been applied, but its current value could not be read. Refresh or reconnect before trying again."
+            )
+        }
+    }
+
+    /// A wear-detection getter is one composite source of truth. Any
+    /// confirmed read-back from that getter replaces all six projections
+    /// atomically so sibling settings cannot retain a contradictory value.
+    private func applyConfirmedReadBack(
+        key: HeadsetSettingKey,
+        storedValue: SettingValue,
+        responses: [Data]
+    ) throws {
+        if ShippingWriteQualifications.wearKeys.contains(key) {
+            guard responses.count == 1 else { throw HeadsetError.malformedResponse }
+            let rawValue = try WL5024Command.getWearDetection
+                .decodeWearDetectionFlags(from: responses[0])
+            let flags = WearDetectionFlags(rawValue: rawValue)
+            let projectedValues = try Dictionary(
+                uniqueKeysWithValues: ShippingWriteQualifications.wearKeys.map { wearKey in
+                    (wearKey, try flags.value(for: wearKey))
+                }
+            )
+            for (wearKey, value) in projectedValues {
+                snapshot.values[wearKey] = value
+                snapshot.valueConfidence[wearKey] = .deviceConfirmed
+                snapshot.readiness[wearKey] = .experimental
+            }
+            return
+        }
+
+        snapshot.values[key] = storedValue
+        snapshot.valueConfidence[key] = .deviceConfirmed
+    }
+
+    /// Once a qualified write might have reached the headset, an unreadable
+    /// read-back makes the affected source of truth unknown. Keep the write
+    /// affordance available, but never retain an older value as confirmed.
+    private func invalidateUnverifiedState(for key: HeadsetSettingKey) {
+        let affectedKeys = ShippingWriteQualifications.wearKeys.contains(key)
+            ? ShippingWriteQualifications.wearKeys
+            : [key]
+        for affectedKey in affectedKeys {
+            snapshot.values.removeValue(forKey: affectedKey)
+            snapshot.valueConfidence.removeValue(forKey: affectedKey)
+            if case .connected(.bluetooth) = snapshot.connection,
+               writeQualifications[affectedKey] != nil {
+                snapshot.readiness[affectedKey] = .experimental
+            } else {
+                snapshot.readiness[affectedKey] = .unavailable
+            }
         }
     }
 
@@ -473,7 +554,8 @@ public final class LiveHeadsetController: HeadsetController {
         TransportStateReducer.apply(update, to: &snapshot)
         updateReadiness()
 
-        if case .failed(_, let message, false) = update {
+        if case .failed(_, let message, false) = update,
+           snapshot.connection == .failed {
             continuation.yield(.error(.transport(message)))
         } else if case .unsolicitedBluetooth(let data) = update {
             DiagnosticRecorder.shared.record(

@@ -84,7 +84,7 @@ struct TransportStateTests {
         #expect(snapshot.values[.busyLight] == .boolean(true))
     }
 
-    @Test func terminalFailureWhileConnectedInvalidatesLiveValues() {
+    @Test func terminalFailureWhileConnectedInvalidatesLiveValuesWithoutFallback() {
         let session = UUID()
         var snapshot = HeadsetSnapshot(
             connection: .connected(.bluetooth),
@@ -94,7 +94,36 @@ struct TransportStateTests {
         )
         TransportStateReducer.apply(.failed(source: .bluetooth, message: "gone", willRetry: false), to: &snapshot)
         #expect(snapshot.connection == .failed)
+        #expect(snapshot.device.transport == nil)
+        #expect(snapshot.device.bluetoothSessionId == nil)
         #expect(snapshot.values.isEmpty)
+    }
+
+    @Test func terminalBluetoothFailureWhileConnectedFallsBackToDetectedReceiver() {
+        let session = UUID()
+        var snapshot = HeadsetSnapshot(
+            connection: .connected(.bluetooth),
+            device: .init(
+                transport: .bluetooth,
+                receiverDetected: true,
+                bluetoothSessionId: session
+            ),
+            values: [.busyLight: .boolean(true)],
+            readiness: [.busyLight: .experimental],
+            valueConfidence: [.busyLight: .deviceConfirmed],
+            lastUpdated: .now
+        )
+
+        TransportStateReducer.apply(
+            .failed(source: .bluetooth, message: "gone", willRetry: false),
+            to: &snapshot
+        )
+
+        #expect(snapshot.connection == .qualificationRequired(.receiver))
+        #expect(snapshot.device.transport == .receiver)
+        #expect(snapshot.device.bluetoothSessionId == nil)
+        #expect(snapshot.values.isEmpty)
+        #expect(snapshot.lastUpdated == nil)
     }
 
     @Test @MainActor func controllerStopInvalidatesSessionValues() async throws {
@@ -136,6 +165,33 @@ struct TransportStateTests {
             WL5024Command.getUCAppStatus.transaction,
             WL5024Command.getLEAudioFeatureMode.transaction,
         ])
+    }
+
+    @Test @MainActor func failedRefreshPublishesInvalidationAfterEarlierSuccess() async throws {
+        let transport = FakeHeadsetTransport(responses: completeRefreshResponses(wearFlags: 0x0067))
+        let controller = LiveHeadsetController(transport: transport)
+        let model = HeadsetModel(demoMode: false, controller: controller)
+        await model.start()
+        for _ in 0..<100 where model.snapshot.connection != .connected(.bluetooth) {
+            await Task.yield()
+        }
+
+        await model.refresh().value
+        #expect(model.snapshot.confidence(for: .busyLight) == .deviceConfirmed)
+        #expect(model.snapshot.lastUpdated != nil)
+
+        // The fake has no responses left, so every distinct read now fails.
+        await model.refresh().value
+        for _ in 0..<100 where !model.snapshot.values.isEmpty {
+            await Task.yield()
+        }
+
+        #expect(model.snapshot.values.isEmpty)
+        #expect(model.snapshot.valueConfidence.isEmpty)
+        #expect(model.snapshot.lastUpdated == nil)
+        #expect(model.snapshot.lastAttemptedAt != nil)
+        #expect(model.failure != nil)
+        await model.stop()
     }
 
     @Test @MainActor func cancellationStopsRefreshImmediately() async {
@@ -180,6 +236,8 @@ struct TransportStateTests {
 
         let snapshot = (try await controller.set(.automaticMedia, value: .boolean(false))).snapshot
         #expect(snapshot.values[.automaticMedia] == .boolean(false))
+        #expect(snapshot.values[.quickPause] == .boolean(true))
+        #expect(snapshot.values[.quickPauseSensitivity] == .choice("sensitive"))
         #expect(transport.transactions == [
             WL5024Command.getWearDetection.transaction,
             WL5024Command.setWearDetection(0x0065).transaction,
@@ -199,8 +257,11 @@ struct TransportStateTests {
         await #expect(throws: HeadsetError.readbackMismatch(.automaticMedia)) {
             try await controller.set(.automaticMedia, value: .boolean(false))
         }
-        #expect(controller.currentSnapshot.values[.automaticMedia] == nil)
-        #expect(controller.currentSnapshot.lastUpdated == nil)
+        // The requested value is never claimed, but the observed composite
+        // remains authoritative even though the command reports mismatch.
+        #expect(controller.currentSnapshot.values[.automaticMedia] == .boolean(true))
+        #expect(controller.currentSnapshot.confidence(for: .automaticMedia) == .deviceConfirmed)
+        #expect(controller.currentSnapshot.lastUpdated != nil)
     }
 
     @Test @MainActor func invalidAcknowledgementStopsBeforeReadback() async {
@@ -432,10 +493,42 @@ struct TransportStateTests {
         #expect(snapshot.lastUpdated != nil)
     }
 
-    @Test func preConnectionTerminalFailureLeavesSearching() {
+    @Test func preConnectionTerminalFailureWithoutFallbackBecomesFailed() {
         var snapshot = HeadsetSnapshot(connection: .searching, device: .init(transport: nil))
         TransportStateReducer.apply(.failed(source: .bluetooth, message: "no service", willRetry: false), to: &snapshot)
         #expect(snapshot.connection == .failed)
+    }
+
+    @Test func preConnectionTerminalBluetoothFailurePreservesReceiverFallback() {
+        var snapshot = HeadsetSnapshot(
+            connection: .qualificationRequired(.receiver),
+            device: .init(transport: .receiver, receiverDetected: true)
+        )
+
+        TransportStateReducer.apply(
+            .failed(source: .bluetooth, message: "no service", willRetry: false),
+            to: &snapshot
+        )
+
+        #expect(snapshot.connection == .qualificationRequired(.receiver))
+        #expect(snapshot.device.transport == .receiver)
+    }
+
+    @Test func terminalReceiverFailureDoesNotDisconnectBluetooth() {
+        let session = UUID()
+        var snapshot = HeadsetSnapshot(
+            connection: .connected(.bluetooth),
+            device: .init(transport: .bluetooth, bluetoothSessionId: session)
+        )
+
+        TransportStateReducer.apply(
+            .failed(source: .receiver, message: "monitor unavailable", willRetry: false),
+            to: &snapshot
+        )
+
+        #expect(snapshot.connection == .connected(.bluetooth))
+        #expect(snapshot.device.transport == .bluetooth)
+        #expect(snapshot.device.bluetoothSessionId == session)
     }
 
     @Test func retryingPreConnectionFailureStaysSearching() {
@@ -460,6 +553,37 @@ struct TransportStateTests {
         #expect(controller.currentSnapshot.values[.quickPause] == nil)
     }
 
+    @Test @MainActor func quickPauseTogglePublishesAllCompositeProjections() async throws {
+        let transport = FakeHeadsetTransport(responses: [
+            .success(wearResponse(flags: 0x0010)),
+            .success(wearAcknowledgement(status: 0)),
+            .success(wearResponse(flags: 0x0010)),
+            .success(wearResponse(flags: 0x0010)),
+            .success(wearAcknowledgement(status: 0)),
+            .success(wearResponse(flags: 0x0000)),
+            .success(wearResponse(flags: 0x0000)),
+            .success(wearAcknowledgement(status: 0)),
+            .success(wearResponse(flags: 0x0020)),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        var snapshot = try await controller.set(.quickPause, value: .boolean(true)).snapshot
+        #expect(snapshot.values[.quickPause] == .boolean(true))
+        #expect(snapshot.values[.quickPauseSensitivity] == .choice("normal"))
+
+        snapshot = try await controller.set(.quickPause, value: .boolean(false)).snapshot
+        #expect(snapshot.values[.quickPause] == .boolean(false))
+        #expect(snapshot.values[.quickPauseSensitivity] == .choice("normal"))
+
+        snapshot = try await controller.set(.quickPause, value: .boolean(true)).snapshot
+        #expect(snapshot.values[.quickPause] == .boolean(true))
+        #expect(snapshot.values[.quickPauseSensitivity] == .choice("sensitive"))
+        for key in ShippingWriteQualifications.wearKeys {
+            #expect(snapshot.confidence(for: key) == .deviceConfirmed)
+        }
+    }
+
     @Test @MainActor func sidetoneSecondStepFailureReportsPartialState() async {
         let transport = FakeHeadsetTransport(responses: [
             .success(preferenceAcknowledgement(module: 7)),
@@ -482,6 +606,32 @@ struct TransportStateTests {
             WL5024Command.getPreference(module: 7).transaction,
             WL5024Command.getPreference(module: 6).transaction,
         ])
+    }
+
+    @Test @MainActor func unreadablePartialSidetoneStateInvalidatesEarlierValue() async throws {
+        let transport = FakeHeadsetTransport(responses: [
+            .success(preferenceAcknowledgement(module: 7)),
+            .success(preferenceAcknowledgement(module: 6)),
+            .success(preferenceResponse(module: 7, value: [1])),
+            .success(preferenceResponse(module: 6, value: [2, 0])),
+            .success(preferenceAcknowledgement(module: 7)),
+            .failure(HeadsetError.timeout),
+            .failure(HeadsetError.timeout),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        _ = try await controller.set(.sidetone, value: .choice("2"))
+        #expect(controller.currentSnapshot.values[.sidetone] == .choice("2"))
+
+        await #expect(throws: HeadsetError.transport(
+            "Part of the sidetone change may have been applied, but its current value could not be read. Refresh or reconnect before trying again."
+        )) {
+            try await controller.set(.sidetone, value: .choice("5"))
+        }
+        #expect(controller.currentSnapshot.values[.sidetone] == nil)
+        #expect(controller.currentSnapshot.confidence(for: .sidetone) == .unknown)
+        #expect(controller.currentSnapshot.readiness(for: .sidetone) == .experimental)
     }
 
     @Test @MainActor func sidetoneFirstStepFailurePerformsNoReadback() async {
@@ -533,6 +683,24 @@ private final class FakeHeadsetTransport: HeadsetTransporting {
         guard !responses.isEmpty else { throw HeadsetError.timeout }
         return try responses.removeFirst().get()
     }
+}
+
+private func completeRefreshResponses(wearFlags: UInt16) -> [Result<Data, any Error>] {
+    [
+        .success(wearResponse(flags: wearFlags)),
+        .success(preferenceResponse(module: 1, value: [1, 0, 0x08, 0x07, 0, 0, 0x08, 0x07])),
+        .success(environmentDetectionResponse(false)),
+        .success(booleanResponse(opcode: 0x0EFF, value: true)),
+        .success(preferenceResponse(module: 7, value: [1])),
+        .success(preferenceResponse(module: 6, value: [3, 0])),
+        .success(booleanResponse(opcode: 0x0023, value: true)),
+        .success(booleanResponse(opcode: 0x0025, value: true)),
+        .success(smartSwitchResponse(false)),
+        .success(statusByteResponse(opcode: 0x0029, value: 3)),
+        .success(statusByteResponse(opcode: 0x0041, value: 0)),
+        .success(statusByteResponse(opcode: 0x0042, value: 0)),
+        .success(preferenceResponse(module: 0x0031, value: [1, 2, 2, 0])),
+    ]
 }
 
 private func wearResponse(flags: UInt16) -> Data {

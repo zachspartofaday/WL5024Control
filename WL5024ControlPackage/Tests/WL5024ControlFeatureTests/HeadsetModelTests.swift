@@ -126,7 +126,10 @@ struct HeadsetModelTests {
 
         #expect(controller.writes.isEmpty)
         #expect(controller.refreshCount == 0)
-        #expect(model.failure?.primaryAction == .retry)
+        #expect(model.failure?.primaryAction == .dismiss)
+        model.retryLastAction()
+        #expect(controller.writes.isEmpty)
+        #expect(controller.refreshCount == 0)
         controller.finishDiscovery()
         await discovery.value
         #expect(model.discoveryState == .completed)

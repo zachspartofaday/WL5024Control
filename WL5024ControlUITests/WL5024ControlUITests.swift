@@ -12,7 +12,7 @@ final class WL5024ControlUITests: XCTestCase {
 
     @MainActor
     func testReadyRegularLayoutAllDestinationsAndAccessibleControls() throws {
-        let app = launch(["--demo"])
+        let app = launch(["--demo", "--ui-layout-probes"])
         XCTAssertTrue(app.staticTexts["Dell WL5024"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Refresh"].isEnabled)
 
@@ -22,11 +22,11 @@ final class WL5024ControlUITests: XCTestCase {
         }
 
         navigate(to: "Wear & Automation", in: app)
+        let label = app.staticTexts["setting.label.wearDetection"]
         let checkBox = app.checkBoxes["Wear detection"]
         XCTAssertTrue(checkBox.waitForExistence(timeout: 2))
         XCTAssertTrue(checkBox.isEnabled)
-        // AUD-010: one semantic identity per row — no duplicate staticText name.
-        XCTAssertFalse(app.staticTexts["Wear detection"].exists)
+        XCTAssertLessThan(label.frame.maxX, checkBox.frame.minX)
 
         let automaticMedia = app.checkBoxes["Automatically pause and resume media"]
         XCTAssertEqual(checkBox.frame.maxX, automaticMedia.frame.maxX, accuracy: 2)
@@ -44,7 +44,7 @@ final class WL5024ControlUITests: XCTestCase {
 
     @MainActor
     func testMinimumLayoutStacksWithoutOverlapAcrossAllDestinations() throws {
-        let app = launch(["--demo", "--ui-minimum"])
+        let app = launch(["--demo", "--ui-minimum", "--ui-layout-probes"])
         XCTAssertTrue(app.staticTexts["Dell WL5024"].waitForExistence(timeout: 5))
 
         for destination in destinations {
@@ -53,22 +53,40 @@ final class WL5024ControlUITests: XCTestCase {
         }
 
         navigate(to: "Wear & Automation", in: app)
+        let label = app.staticTexts["setting.label.autoPowerOff"]
         let selector = app.popUpButtons["Automatic power off"]
         XCTAssertTrue(selector.waitForExistence(timeout: 2))
-        XCTAssertFalse(app.staticTexts["Automatic power off"].exists)
+        XCTAssertLessThanOrEqual(label.frame.maxY, selector.frame.minY)
+        XCTAssertFalse(label.frame.intersects(selector.frame))
+    }
+
+    @MainActor
+    func testSettingRowsExposeOneControlIdentityWithoutLayoutProbes() throws {
+        let app = launch(["--demo"])
+        navigate(to: "Wear & Automation", in: app)
+
+        XCTAssertTrue(app.checkBoxes["Wear detection"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["Wear detection"].exists)
     }
 
     @MainActor
     func testReadOnlyStateExplainsDisabledControlAndMenuItem() throws {
-        let app = launch(["--read-only"])
+        let app = launch(["--read-only", "--ui-layout-probes"])
         navigate(to: "Wear & Automation", in: app)
 
         let automaticMedia = app.checkBoxes["Automatically pause and resume media"]
         XCTAssertTrue(automaticMedia.waitForExistence(timeout: 3))
         XCTAssertFalse(automaticMedia.isEnabled)
-        // AUD-010: readiness status is exposed as the control's hint, not a
-        // duplicate staticText name.
-        XCTAssertFalse(app.staticTexts["Automatically pause and resume media"].exists)
+        let explanation = app.staticTexts["setting.explanation.automaticMedia"]
+        XCTAssertTrue(explanation.exists)
+        XCTAssertTrue(app.staticTexts[
+            "Turn this off to prevent the headset from launching or controlling music when you put it on or remove it."
+        ].exists)
+        let readiness = app.staticTexts["setting.status.automaticMedia"]
+        XCTAssertTrue(readiness.exists)
+        XCTAssertTrue(app.staticTexts[
+            "Current value available; writing awaits hardware validation"
+        ].exists)
 
         let statusItem = app.statusItems["WL5024 connected"]
         XCTAssertTrue(statusItem.waitForExistence(timeout: 3))
@@ -80,16 +98,18 @@ final class WL5024ControlUITests: XCTestCase {
 
     @MainActor
     func testExperimentalSettingsOfferExplicitWritesWithoutClaimingCurrentValues() throws {
-        let app = launch(["--experimental"])
+        let app = launch(["--experimental", "--ui-layout-probes"])
 
         navigate(to: "Wear & Automation", in: app)
         let automaticMedia = app.descendants(matching: .any)["setting.experimental.automaticMedia"]
         XCTAssertTrue(automaticMedia.waitForExistence(timeout: 3))
-        // AUD-010: experimental menu exposes "Set value for …", not a
-        // duplicate row-title staticText.
-        XCTAssertTrue(app.buttons["Set value for Automatically pause and resume media"].waitForExistence(timeout: 3))
-        automaticMedia.click()
-        let turnOn = automaticMedia.menuItems["Turn On"]
+        XCTAssertTrue(app.staticTexts["setting.status.automaticMedia"].exists)
+        let automaticMediaMenu = app.menuButtons[
+            "Set value for Automatically pause and resume media"
+        ]
+        XCTAssertTrue(automaticMediaMenu.waitForExistence(timeout: 3))
+        automaticMediaMenu.click()
+        let turnOn = automaticMediaMenu.menuItems["Turn On"]
         XCTAssertTrue(turnOn.waitForExistence(timeout: 2))
         turnOn.click()
         XCTAssertTrue(app.checkBoxes["Automatically pause and resume media"].waitForExistence(timeout: 2))
@@ -112,7 +132,12 @@ final class WL5024ControlUITests: XCTestCase {
 
     @MainActor
     func testDiagnosticsSelectableValuesProgressCancellationAndFocusReturn() throws {
-        let app = launch(["--demo", "--ui-observe-export-progress", "--ui-focus-probe"])
+        let app = launch([
+            "--demo",
+            "--ui-fast-discovery",
+            "--ui-observe-export-progress",
+            "--ui-focus-probe",
+        ])
         navigate(to: "Diagnostics", in: app)
         XCTAssertGreaterThan(app.staticTexts.matching(identifier: "diagnostics.protocol.value").count, 0)
 

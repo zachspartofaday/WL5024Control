@@ -251,6 +251,22 @@ private struct SettingRow: View {
     private var controlWidth: CGFloat {
         key == .deviceName ? DetailLayoutMetrics.wideControlWidth : DetailLayoutMetrics.controlWidth
     }
+    private var exposesUITestMetadata: Bool {
+        ProcessInfo.processInfo.arguments.contains("--ui-layout-probes")
+    }
+    private var accessibilityHintText: String {
+        var parts = [String(localized: key.explanation)]
+        if readiness != .ready {
+            parts.append(String(localized: readiness.status))
+        }
+        if isSensitivityGated {
+            parts.append("Turn on Quick Pause to change sensitivity.")
+        }
+        if model.discoveryState == .running {
+            parts.append("Read-only discovery is running. Cancel it before changing settings.")
+        }
+        return parts.joined(separator: " ")
+    }
 
     var body: some View {
         SettingsRowLayout(controlWidth: controlWidth) {
@@ -259,28 +275,30 @@ private struct SettingRow: View {
                 // visual title from AX to leave one control identity (AUD-010).
                 Text(key.title)
                     .accessibilityIdentifier("setting.label.\(key.rawValue)")
-                    .accessibilityHidden(true)
+                    .accessibilityHidden(!exposesUITestMetadata)
                 Text(key.explanation)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityHidden(true)
+                    .accessibilityIdentifier("setting.explanation.\(key.rawValue)")
+                    .accessibilityHidden(!exposesUITestMetadata)
                 if readiness != .ready {
                     Text(readiness.status)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityHidden(true)
+                        .accessibilityIdentifier("setting.status.\(key.rawValue)")
+                        .accessibilityHidden(!exposesUITestMetadata)
                 }
                 if isSensitivityGated {
                     Text("Turn on Quick Pause to change sensitivity.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityHidden(true)
+                        .accessibilityIdentifier("setting.gating.\(key.rawValue)")
+                        .accessibilityHidden(!exposesUITestMetadata)
                 }
             }
-            .accessibilityHidden(true)
 
             Group {
                 if let value = model.value(for: key) {
@@ -301,7 +319,7 @@ private struct SettingRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
-            .accessibilityHint(readiness == .ready ? Text("") : Text(readiness.status))
+            .accessibilityHint(Text(accessibilityHintText))
         }
         .padding(.vertical, DetailLayoutMetrics.rowVerticalInset)
     }

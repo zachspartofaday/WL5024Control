@@ -51,20 +51,29 @@ enum TransportStateReducer {
                 snapshot.connection = .unavailable
             }
         case .failed(let source, _, let willRetry):
-            if !willRetry, source == snapshot.device.transport || !snapshot.connection.isConnected {
-                // Terminal failure ends searching even when it happens before a
-                // transport is recorded (e.g. control service missing), where
-                // source (.bluetooth) != transport (nil).
-                // A failed session must not retain values as confirmed.
-                if snapshot.connection.isConnected {
-                    invalidateLiveValues(&snapshot)
-                    snapshot.device.bluetoothSessionId = nil
-                }
-                snapshot.connection = .failed
-            } else if !snapshot.connection.isConnected, willRetry {
+            if !snapshot.connection.isConnected, willRetry {
                 snapshot.connection = snapshot.device.receiverDetected
                     ? .qualificationRequired(.receiver)
                     : .searching
+            } else if !willRetry, source == .bluetooth,
+                      source == snapshot.device.transport || !snapshot.connection.isConnected {
+                // A terminal Bluetooth failure ends that session/search, but
+                // a detected receiver remains a valid discovery fallback.
+                if snapshot.device.transport == .bluetooth {
+                    invalidateLiveValues(&snapshot)
+                    snapshot.device.bluetoothSessionId = nil
+                }
+                snapshot.device.transport = snapshot.device.receiverDetected ? .receiver : nil
+                snapshot.connection = snapshot.device.receiverDetected
+                    ? .qualificationRequired(.receiver)
+                    : .failed
+            } else if !willRetry, source == .receiver,
+                      source == snapshot.device.transport,
+                      !snapshot.connection.isConnected {
+                // A receiver-monitor failure must not terminate the
+                // independent Bluetooth search path.
+                snapshot.device.transport = nil
+                snapshot.connection = .searching
             }
         case .unsolicitedBluetooth:
             break

@@ -47,12 +47,14 @@ private struct LaunchProfile {
     let experimentalMode: Bool
     let minimumWindow: Bool
     let colorScheme: ColorScheme?
+    let fastDiscovery: Bool
 
     init(arguments: [String]) {
         demoMode = arguments.contains("--demo")
         readOnlyMode = arguments.contains("--read-only")
         experimentalMode = arguments.contains("--experimental")
         minimumWindow = arguments.contains("--ui-minimum")
+        fastDiscovery = arguments.contains("--ui-fast-discovery")
         colorScheme = arguments.contains("--appearance-light")
             ? .light
             : arguments.contains("--appearance-dark") ? .dark : nil
@@ -61,7 +63,13 @@ private struct LaunchProfile {
     @MainActor
     func makeModel() -> HeadsetModel {
         if experimentalMode { return makeExperimentalModel() }
-        guard readOnlyMode else { return HeadsetModel(demoMode: demoMode) }
+        guard readOnlyMode else {
+            guard demoMode else { return HeadsetModel() }
+            return HeadsetModel(
+                demoMode: true,
+                controller: MockHeadsetController(discoveryStepDelay: mockDiscoveryDelay)
+            )
+        }
         let capabilities = Set(HeadsetSettingKey.allCases)
         let snapshot = HeadsetSnapshot(
             connection: .connected(.bluetooth),
@@ -79,7 +87,10 @@ private struct LaunchProfile {
         )
         return HeadsetModel(
             demoMode: false,
-            controller: MockHeadsetController(snapshot: snapshot)
+            controller: MockHeadsetController(
+                snapshot: snapshot,
+                discoveryStepDelay: mockDiscoveryDelay
+            )
         )
     }
 
@@ -105,7 +116,14 @@ private struct LaunchProfile {
         )
         return HeadsetModel(
             demoMode: false,
-            controller: MockHeadsetController(snapshot: snapshot)
+            controller: MockHeadsetController(
+                snapshot: snapshot,
+                discoveryStepDelay: mockDiscoveryDelay
+            )
         )
+    }
+
+    private var mockDiscoveryDelay: Duration {
+        fastDiscovery ? .milliseconds(1) : .milliseconds(100)
     }
 }

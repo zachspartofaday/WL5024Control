@@ -7,10 +7,15 @@ public final class MockHeadsetController: HeadsetController {
     private let continuation: AsyncStream<HeadsetEvent>.Continuation
     private var revision: UInt64 = 0
     private let connectedState: ConnectionState
+    private let discoveryStepDelay: Duration
 
-    public init(snapshot: HeadsetSnapshot = .demo()) {
+    public init(
+        snapshot: HeadsetSnapshot = .demo(),
+        discoveryStepDelay: Duration = .milliseconds(100)
+    ) {
         self.snapshot = snapshot
         connectedState = snapshot.connection
+        self.discoveryStepDelay = discoveryStepDelay
         let pair = AsyncStream.makeStream(
             of: HeadsetEvent.self,
             bufferingPolicy: .bufferingNewest(20)
@@ -68,7 +73,7 @@ public final class MockHeadsetController: HeadsetController {
             try Task.checkCancellation()
             // Yield so demo-mode UI can render numeric progress and deliver
             // the Cancel action before the loop completes.
-            try await Task.sleep(for: .milliseconds(5))
+            try await Task.sleep(for: discoveryStepDelay)
             try Task.checkCancellation()
             progress(.init(
                 completed: index + 1,

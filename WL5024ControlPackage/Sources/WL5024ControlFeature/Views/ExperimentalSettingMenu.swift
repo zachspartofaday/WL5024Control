@@ -26,7 +26,7 @@ struct ExperimentalSettingMenu: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
         // Visible action is "Set Value…"; expose an unambiguous name that
         // does not duplicate the hidden row title (AUD-010).
-        .accessibilityLabel(Text("Set value for ") + Text(key.title))
+        .accessibilityLabel("Set value for \(String(localized: key.title))")
         .accessibilityHint("Experimental write; the current value has not been read from the headset")
         .accessibilityIdentifier("setting.experimental.\(key.rawValue)")
     }
