@@ -251,44 +251,26 @@ private struct SettingRow: View {
     private var controlWidth: CGFloat {
         key == .deviceName ? DetailLayoutMetrics.wideControlWidth : DetailLayoutMetrics.controlWidth
     }
-    private var exposesUITestMetadata: Bool {
-        ProcessInfo.processInfo.arguments.contains("--ui-layout-probes")
-    }
-    private var accessibilityHintText: String {
-        var parts = [String(localized: key.explanation)]
-        if readiness != .ready {
-            parts.append(String(localized: readiness.status))
-        }
-        if isSensitivityGated {
-            parts.append("Turn on Quick Pause to change sensitivity.")
-        }
-        if model.discoveryState == .running {
-            parts.append("Read-only discovery is running. Cancel it before changing settings.")
-        }
-        return parts.joined(separator: " ")
-    }
 
     var body: some View {
         SettingsRowLayout(controlWidth: controlWidth) {
             VStack(alignment: .leading, spacing: 4) {
-                // The native Toggle/Picker carries the semantic name; hide the
-                // visual title from AX to leave one control identity (AUD-010).
+                // The trailing value/control owns the setting's semantic name.
+                // Keep the visible title out of AX to leave one identity, while
+                // explanations and state remain available in production.
                 Text(key.title)
-                    .accessibilityIdentifier("setting.label.\(key.rawValue)")
-                    .accessibilityHidden(!exposesUITestMetadata)
+                    .accessibilityHidden(true)
                 Text(key.explanation)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("setting.explanation.\(key.rawValue)")
-                    .accessibilityHidden(!exposesUITestMetadata)
                 if readiness != .ready {
                     Text(readiness.status)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("setting.status.\(key.rawValue)")
-                        .accessibilityHidden(!exposesUITestMetadata)
                 }
                 if isSensitivityGated {
                     Text("Turn on Quick Pause to change sensitivity.")
@@ -296,7 +278,6 @@ private struct SettingRow: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("setting.gating.\(key.rawValue)")
-                        .accessibilityHidden(!exposesUITestMetadata)
                 }
             }
 
@@ -316,10 +297,12 @@ private struct SettingRow: View {
                 } else {
                     Text("Not read from headset")
                         .foregroundStyle(.secondary)
+                        .accessibilityLabel(Text(key.title))
+                        .accessibilityValue("Not read from headset")
+                        .accessibilityIdentifier("setting.unknown.\(key.rawValue)")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
-            .accessibilityHint(Text(accessibilityHintText))
         }
         .padding(.vertical, DetailLayoutMetrics.rowVerticalInset)
     }
@@ -328,24 +311,26 @@ private struct SettingRow: View {
     private func control(value: SettingValue) -> some View {
         switch key.controlKind {
         case .toggle:
-            Toggle(key.title, isOn: Binding(
-                get: { if case .boolean(let enabled) = value { enabled } else { false } },
-                set: { model.set(key, to: .boolean($0)) }
-            ))
-            .labelsHidden()
+            NativeAccessibleCheckbox(
+                label: String(localized: key.title),
+                isOn: Binding(
+                    get: { if case .boolean(let enabled) = value { enabled } else { false } },
+                    set: { model.set(key, to: .boolean($0)) }
+                )
+            )
+            .fixedSize()
             .frame(width: DetailLayoutMetrics.pickerWidth, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
 
         case .choices:
-            Picker(key.title, selection: Binding(
-                get: { if case .choice(let selection) = value { selection } else { "" } },
-                set: { model.set(key, to: .choice($0)) }
-            )) {
-                ForEach(key.choices) { choice in
-                    Text(choice.title).tag(choice.id)
-                }
-            }
-            .labelsHidden()
+            NativeAccessiblePicker(
+                label: String(localized: key.title),
+                choices: key.choices,
+                selection: Binding(
+                    get: { if case .choice(let selection) = value { selection } else { "" } },
+                    set: { model.set(key, to: .choice($0)) }
+                )
+            )
             .frame(width: DetailLayoutMetrics.pickerWidth, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
 
@@ -483,6 +468,99 @@ private struct LevelSettingControl: View {
         .frame(width: DetailLayoutMetrics.controlWidth)
         .onChange(of: currentValue) {
             draftValue = Double(currentValue)
+        }
+    }
+}
+
+private struct NativeAccessibleCheckbox: NSViewRepresentable {
+    let label: String
+    @Binding var isOn: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isOn: $isOn)
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(
+            checkboxWithTitle: "",
+            target: context.coordinator,
+            action: #selector(Coordinator.changed(_:))
+        )
+        button.setAccessibilityElement(true)
+        button.setAccessibilityRole(.checkBox)
+        button.setAccessibilityLabel(label)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.isOn = $isOn
+        button.state = isOn ? .on : .off
+        button.isEnabled = isEnabled
+        button.setAccessibilityLabel(label)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var isOn: Binding<Bool>
+
+        init(isOn: Binding<Bool>) {
+            self.isOn = isOn
+        }
+
+        @objc func changed(_ sender: NSButton) {
+            isOn.wrappedValue = sender.state == .on
+        }
+    }
+}
+
+private struct NativeAccessiblePicker: NSViewRepresentable {
+    let label: String
+    let choices: [SettingChoice]
+    @Binding var selection: String
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selection: $selection)
+    }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: false)
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.changed(_:))
+        button.setAccessibilityElement(true)
+        button.setAccessibilityRole(.popUpButton)
+        button.setAccessibilityLabel(label)
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        let options = choices.map { ($0.id, String(localized: $0.title)) }
+        context.coordinator.selection = $selection
+        context.coordinator.optionIDs = options.map(\.0)
+        if button.itemTitles != options.map(\.1) {
+            button.removeAllItems()
+            button.addItems(withTitles: options.map(\.1))
+        }
+        if let selectedIndex = options.firstIndex(where: { $0.0 == selection }) {
+            button.selectItem(at: selectedIndex)
+        }
+        button.isEnabled = isEnabled
+        button.setAccessibilityLabel(label)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var selection: Binding<String>
+        var optionIDs: [String] = []
+
+        init(selection: Binding<String>) {
+            self.selection = selection
+        }
+
+        @objc func changed(_ sender: NSPopUpButton) {
+            guard optionIDs.indices.contains(sender.indexOfSelectedItem) else { return }
+            selection.wrappedValue = optionIDs[sender.indexOfSelectedItem]
         }
     }
 }

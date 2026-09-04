@@ -91,7 +91,14 @@ struct TransportAdapterTests {
         }
         await Task.yield()
         responseTask.cancel()
-        await #expect(throws: CancellationError.self) { try await responseTask.value }
+        do {
+            _ = try await responseTask.value
+            Issue.record("Expected cancellation")
+        } catch is CancellationError {
+            // Read transactions preserve ordinary cancellation semantics.
+        } catch {
+            Issue.record("Expected cancellation, got \(error)")
+        }
 
         source.emit(.lifecycle(.setupFailed))
         source.emit(.failed(message: "fixture setup failure", willRetry: true))
@@ -101,6 +108,70 @@ struct TransportAdapterTests {
             message: "fixture setup failure",
             willRetry: true
         )))
+    }
+
+    @Test func bluetoothAdapterPreservesDispatchedFailureState() async {
+        let source = FakeBluetoothEventSource()
+        let transport = BLETransport(source: source)
+        transport.configure { _ in }
+        transport.start()
+        source.emit(.ready(BluetoothConnectionMetadata(
+            name: "WL5024",
+            identifier: UUID(),
+            diagnosticDetails: [:]
+        )))
+
+        let responseTask = Task {
+            try await transport.transactWrite(
+                WL5024Command.getWearDetection.transaction,
+                timeout: .seconds(10)
+            )
+        }
+        await Task.yield()
+        source.emit(.writeAcknowledged(characteristic: "fixture-write-characteristic"))
+        source.emit(.writeFailed("fixture write failed"))
+
+        do {
+            _ = try await responseTask.value
+            Issue.record("Expected a dispatched transaction failure")
+        } catch let error as DispatchedTransactionError {
+            #expect(!error.isCancellation)
+            #expect(error.gattWriteAcknowledged)
+            #expect(error.localizedDescription == "fixture write failed")
+        } catch {
+            Issue.record("Expected dispatched transaction failure, got \(error)")
+        }
+    }
+
+    @Test func bluetoothAdapterPreservesDispatchedWriteCancellation() async {
+        let source = FakeBluetoothEventSource()
+        let transport = BLETransport(source: source)
+        transport.configure { _ in }
+        transport.start()
+        source.emit(.ready(BluetoothConnectionMetadata(
+            name: "WL5024",
+            identifier: UUID(),
+            diagnosticDetails: [:]
+        )))
+
+        let responseTask = Task {
+            try await transport.transactWrite(
+                WL5024Command.getWearDetection.transaction,
+                timeout: .seconds(10)
+            )
+        }
+        await Task.yield()
+        responseTask.cancel()
+
+        do {
+            _ = try await responseTask.value
+            Issue.record("Expected dispatched write cancellation")
+        } catch let error as DispatchedTransactionError {
+            #expect(error.isCancellation)
+            #expect(!error.gattWriteAcknowledged)
+        } catch {
+            Issue.record("Expected dispatched write cancellation, got \(error)")
+        }
     }
 
     @Test func hidRetainsTwoInterfacesRecordsBothAndRemovesOnlyAfterLast() {

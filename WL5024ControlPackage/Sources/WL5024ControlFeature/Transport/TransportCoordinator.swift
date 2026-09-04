@@ -46,6 +46,13 @@ final class TransportCoordinator: HeadsetTransporting {
         return try await bluetooth.transact(transaction, timeout: timeout)
     }
 
+    func transactWrite(_ transaction: TransportTransaction, timeout: Duration = .seconds(3)) async throws -> Data {
+        guard activeKind == .bluetooth else {
+            throw HeadsetError.transport("The receiver report profile still needs hardware qualification.")
+        }
+        return try await bluetooth.transactWrite(transaction, timeout: timeout)
+    }
+
     private func handleBluetooth(_ update: TransportUpdate) {
         if case .connectedBluetooth(_, let identifier) = update, activeKind == nil {
             activeKind = .bluetooth

@@ -183,31 +183,56 @@ public final class LiveHeadsetController: HeadsetController {
             for: value,
             preparationResponses: preparationResponses
         )
-        do {
-            for (index, writeTransaction) in writeTransactions.enumerated() {
+        for (index, writeTransaction) in writeTransactions.enumerated() {
+            do {
                 try Task.checkCancellation()
-                do {
-                    let acknowledgement = try await transport.transact(writeTransaction, timeout: .seconds(3))
-                    try qualification.acknowledgementValidator(index, acknowledgement)
-                } catch is CancellationError {
+                let acknowledgement = try await transport.transactWrite(writeTransaction, timeout: .seconds(3))
+                try qualification.acknowledgementValidator(index, acknowledgement)
+            } catch let error as DispatchedTransactionError {
+                if error.isCancellation {
+                    invalidateCancelledWrite(
+                        key: key,
+                        step: index,
+                        gattWriteAcknowledged: error.gattWriteAcknowledged
+                    )
                     throw CancellationError()
-                } catch {
-                    // A later step failed after earlier steps were acknowledged:
-                    // observe and report partial device state (AUD-007). No
-                    // rollback is attempted without proven-safe ordering.
-                    if index > 0 {
-                        throw await partialWriteError(
-                            key: key,
-                            qualification: qualification,
-                            step: index,
-                            underlying: error
-                        )
-                    }
-                    throw error
                 }
+                throw await writeRecoveryError(
+                    key: key,
+                    qualification: qualification,
+                    step: index,
+                    earlierStepAcknowledged: index > 0,
+                    underlying: error
+                )
+            } catch is CancellationError {
+                // Cancellation before step zero is safe. Between later steps,
+                // at least one write was already acknowledged, and the
+                // cancelled task cannot perform a reliable read-back.
+                if index > 0 {
+                    invalidateCancelledWrite(
+                        key: key,
+                        step: index,
+                        gattWriteAcknowledged: true
+                    )
+                }
+                throw CancellationError()
+            } catch {
+                // A later step failed after earlier steps were acknowledged:
+                // observe and report partial device state (AUD-007). No
+                // rollback is attempted without proven-safe ordering.
+                if index > 0 {
+                    throw await writeRecoveryError(
+                        key: key,
+                        qualification: qualification,
+                        step: index,
+                        earlierStepAcknowledged: true,
+                        underlying: error
+                    )
+                }
+                // An explicit negative acknowledgement or provable
+                // pre-dispatch failure leaves the prior value authoritative.
+                throw error
             }
-        } catch is CancellationError {
-            throw CancellationError()
         }
         var readBackResponses: [Data] = []
         let storedValue: SettingValue
@@ -440,13 +465,14 @@ public final class LiveHeadsetController: HeadsetController {
         return [(key, try definition.decoder([response]))]
     }
 
-    /// After an intermediate multi-step write failure, performs qualified
-    /// read-back and reports the observed partial state. Returns the error to
-    /// throw; publishes observed values when decodable (AUD-007).
-    private func partialWriteError(
+    /// After a write may have reached the headset, performs qualified read-back
+    /// and reports the observed state. Returns the error to throw and publishes
+    /// observed values when decodable (AUD-007, WL5024-POST-AUD-002).
+    private func writeRecoveryError(
         key: HeadsetSettingKey,
         qualification: WriteQualification,
         step: Int,
+        earlierStepAcknowledged: Bool,
         underlying: any Error
     ) async -> any Error {
         var readBackResponses: [Data] = []
@@ -467,7 +493,9 @@ public final class LiveHeadsetController: HeadsetController {
             _ = publish()
             DiagnosticRecorder.shared.record(
                 "protocol-write",
-                "Multi-step write partially applied",
+                earlierStepAcknowledged
+                    ? "Multi-step write partially applied"
+                    : "Dispatched write outcome recovered",
                 details: [
                     "setting": key.rawValue,
                     "failedStep": step.description,
@@ -475,9 +503,10 @@ public final class LiveHeadsetController: HeadsetController {
                     "error": underlying.localizedDescription,
                 ]
             )
-            return HeadsetError.transport(
-                "Part of the \(key.rawValue) change was applied (observed \(String(describing: observed))). Check the setting and try again."
-            )
+            let message = earlierStepAcknowledged
+                ? "Part of the \(key.rawValue) change was applied (observed \(String(describing: observed))). Check the setting and try again."
+                : "The \(key.rawValue) change could not be confirmed (observed \(String(describing: observed))). Check the setting and try again."
+            return HeadsetError.transport(message)
         } catch is CancellationError {
             invalidateUnverifiedState(for: key)
             _ = publish()
@@ -487,7 +516,9 @@ public final class LiveHeadsetController: HeadsetController {
             _ = publish()
             DiagnosticRecorder.shared.record(
                 "protocol-write",
-                "Multi-step write failed with unreadable partial state",
+                earlierStepAcknowledged
+                    ? "Multi-step write failed with unreadable partial state"
+                    : "Dispatched write failed with unreadable state",
                 details: [
                     "setting": key.rawValue,
                     "failedStep": step.description,
@@ -495,10 +526,29 @@ public final class LiveHeadsetController: HeadsetController {
                     "readBackError": error.localizedDescription,
                 ]
             )
-            return HeadsetError.transport(
-                "Part of the \(key.rawValue) change may have been applied, but its current value could not be read. Refresh or reconnect before trying again."
-            )
+            let message = earlierStepAcknowledged
+                ? "Part of the \(key.rawValue) change may have been applied, but its current value could not be read. Refresh or reconnect before trying again."
+                : "The \(key.rawValue) change may have been applied, but its current value could not be read. Refresh or reconnect before trying again."
+            return HeadsetError.transport(message)
         }
+    }
+
+    private func invalidateCancelledWrite(
+        key: HeadsetSettingKey,
+        step: Int,
+        gattWriteAcknowledged: Bool
+    ) {
+        invalidateUnverifiedState(for: key)
+        _ = publish()
+        DiagnosticRecorder.shared.record(
+            "protocol-write",
+            "Write cancelled after hardware state became uncertain",
+            details: [
+                "setting": key.rawValue,
+                "step": step.description,
+                "gattWriteAcknowledged": gattWriteAcknowledged.description,
+            ]
+        )
     }
 
     /// A wear-detection getter is one composite source of truth. Any

@@ -634,18 +634,104 @@ struct TransportStateTests {
         #expect(controller.currentSnapshot.readiness(for: .sidetone) == .experimental)
     }
 
-    @Test @MainActor func sidetoneFirstStepFailurePerformsNoReadback() async {
+    @Test @MainActor func sidetonePreDispatchFirstStepFailurePreservesConfirmedValue() async throws {
         let transport = FakeHeadsetTransport(responses: [
+            .success(preferenceAcknowledgement(module: 7)),
+            .success(preferenceAcknowledgement(module: 6)),
+            .success(preferenceResponse(module: 7, value: [1])),
+            .success(preferenceResponse(module: 6, value: [2, 0])),
             .failure(HeadsetError.timeout),
         ])
         let controller = LiveHeadsetController(transport: transport)
         _ = await controller.start()
 
+        _ = try await controller.set(.sidetone, value: .choice("2"))
         await #expect(throws: HeadsetError.timeout) {
             try await controller.set(.sidetone, value: .choice("5"))
         }
-        #expect(transport.transactions.count == 1)
+        #expect(transport.transactions.count == 5)
+        #expect(controller.currentSnapshot.values[.sidetone] == .choice("2"))
+        #expect(controller.currentSnapshot.confidence(for: .sidetone) == .deviceConfirmed)
+    }
+
+    @Test @MainActor func sidetoneDispatchedFirstStepFailureReadsBackCurrentValue() async throws {
+        let transport = FakeHeadsetTransport(responses: [
+            .success(preferenceAcknowledgement(module: 7)),
+            .success(preferenceAcknowledgement(module: 6)),
+            .success(preferenceResponse(module: 7, value: [1])),
+            .success(preferenceResponse(module: 6, value: [2, 0])),
+            .failure(DispatchedTransactionError(
+                underlying: HeadsetError.timeout,
+                gattWriteAcknowledged: true
+            )),
+            .success(preferenceResponse(module: 7, value: [1])),
+            .success(preferenceResponse(module: 6, value: [2, 0])),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        _ = try await controller.set(.sidetone, value: .choice("2"))
+        await #expect(throws: HeadsetError.transport(
+            "The sidetone change could not be confirmed (observed choice(\"2\")). Check the setting and try again."
+        )) {
+            try await controller.set(.sidetone, value: .choice("5"))
+        }
+        #expect(controller.currentSnapshot.values[.sidetone] == .choice("2"))
+        #expect(controller.currentSnapshot.confidence(for: .sidetone) == .deviceConfirmed)
+        #expect(transport.transactions.count == 7)
+    }
+
+    @Test @MainActor func dispatchedWriteCancellationInvalidatesConfirmedValue() async throws {
+        let transport = FakeHeadsetTransport(responses: [
+            .success(preferenceAcknowledgement(module: 7)),
+            .success(preferenceAcknowledgement(module: 6)),
+            .success(preferenceResponse(module: 7, value: [1])),
+            .success(preferenceResponse(module: 6, value: [2, 0])),
+            .failure(DispatchedTransactionError(
+                underlying: CancellationError(),
+                gattWriteAcknowledged: false
+            )),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        _ = try await controller.set(.sidetone, value: .choice("2"))
+        await #expect(throws: CancellationError.self) {
+            try await controller.set(.sidetone, value: .choice("5"))
+        }
         #expect(controller.currentSnapshot.values[.sidetone] == nil)
+        #expect(controller.currentSnapshot.confidence(for: .sidetone) == .unknown)
+        #expect(controller.currentSnapshot.readiness(for: .sidetone) == .experimental)
+        #expect(transport.transactions.count == 5)
+    }
+
+    @Test @MainActor func unreadableFirstWearWriteInvalidatesCompositeValues() async throws {
+        let transport = FakeHeadsetTransport(responses: [
+            .success(wearResponse(flags: 0x0000)),
+            .success(wearAcknowledgement(status: 0)),
+            .success(wearResponse(flags: 0x0002)),
+            .success(wearResponse(flags: 0x0002)),
+            .failure(DispatchedTransactionError(
+                underlying: HeadsetError.timeout,
+                gattWriteAcknowledged: true
+            )),
+            .failure(HeadsetError.timeout),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        _ = try await controller.set(.automaticMedia, value: .boolean(true))
+        await #expect(throws: HeadsetError.transport(
+            "The automaticMedia change may have been applied, but its current value could not be read. Refresh or reconnect before trying again."
+        )) {
+            try await controller.set(.automaticMedia, value: .boolean(false))
+        }
+        for key in ShippingWriteQualifications.wearKeys {
+            #expect(controller.currentSnapshot.values[key] == nil)
+            #expect(controller.currentSnapshot.confidence(for: key) == .unknown)
+            #expect(controller.currentSnapshot.readiness(for: key) == .experimental)
+        }
+        #expect(transport.transactions.count == 6)
     }
 
     @Test @MainActor func readOnlyDiscoveryPropagatesCancellationBeforeSecondQuery() async {

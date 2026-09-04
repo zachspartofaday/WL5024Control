@@ -12,7 +12,7 @@ final class WL5024ControlUITests: XCTestCase {
 
     @MainActor
     func testReadyRegularLayoutAllDestinationsAndAccessibleControls() throws {
-        let app = launch(["--demo", "--ui-layout-probes"])
+        let app = launch(["--demo"])
         XCTAssertTrue(app.staticTexts["Dell WL5024"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Refresh"].isEnabled)
 
@@ -22,11 +22,13 @@ final class WL5024ControlUITests: XCTestCase {
         }
 
         navigate(to: "Wear & Automation", in: app)
-        let label = app.staticTexts["setting.label.wearDetection"]
+        let explanation = app.staticTexts["setting.explanation.wearDetection"]
         let checkBox = app.checkBoxes["Wear detection"]
         XCTAssertTrue(checkBox.waitForExistence(timeout: 2))
         XCTAssertTrue(checkBox.isEnabled)
-        XCTAssertLessThan(label.frame.maxX, checkBox.frame.minX)
+        XCTAssertEqual(checkBox.label, "Wear detection")
+        XCTAssertTrue(explanation.exists)
+        XCTAssertLessThan(explanation.frame.maxX, checkBox.frame.minX)
 
         let automaticMedia = app.checkBoxes["Automatically pause and resume media"]
         XCTAssertEqual(checkBox.frame.maxX, automaticMedia.frame.maxX, accuracy: 2)
@@ -44,7 +46,7 @@ final class WL5024ControlUITests: XCTestCase {
 
     @MainActor
     func testMinimumLayoutStacksWithoutOverlapAcrossAllDestinations() throws {
-        let app = launch(["--demo", "--ui-minimum", "--ui-layout-probes"])
+        let app = launch(["--demo", "--ui-minimum"])
         XCTAssertTrue(app.staticTexts["Dell WL5024"].waitForExistence(timeout: 5))
 
         for destination in destinations {
@@ -53,11 +55,13 @@ final class WL5024ControlUITests: XCTestCase {
         }
 
         navigate(to: "Wear & Automation", in: app)
-        let label = app.staticTexts["setting.label.autoPowerOff"]
+        let explanation = app.staticTexts["setting.explanation.autoPowerOff"]
         let selector = app.popUpButtons["Automatic power off"]
         XCTAssertTrue(selector.waitForExistence(timeout: 2))
-        XCTAssertLessThanOrEqual(label.frame.maxY, selector.frame.minY)
-        XCTAssertFalse(label.frame.intersects(selector.frame))
+        XCTAssertEqual(selector.label, "Automatic power off")
+        XCTAssertTrue(explanation.exists)
+        XCTAssertLessThanOrEqual(explanation.frame.maxY, selector.frame.minY)
+        XCTAssertFalse(explanation.frame.intersects(selector.frame))
     }
 
     @MainActor
@@ -67,11 +71,12 @@ final class WL5024ControlUITests: XCTestCase {
 
         XCTAssertTrue(app.checkBoxes["Wear detection"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.staticTexts["Wear detection"].exists)
+        XCTAssertTrue(app.staticTexts["setting.explanation.wearDetection"].exists)
     }
 
     @MainActor
     func testReadOnlyStateExplainsDisabledControlAndMenuItem() throws {
-        let app = launch(["--read-only", "--ui-layout-probes"])
+        let app = launch(["--read-only"])
         navigate(to: "Wear & Automation", in: app)
 
         let automaticMedia = app.checkBoxes["Automatically pause and resume media"]
@@ -98,7 +103,7 @@ final class WL5024ControlUITests: XCTestCase {
 
     @MainActor
     func testExperimentalSettingsOfferExplicitWritesWithoutClaimingCurrentValues() throws {
-        let app = launch(["--experimental", "--ui-layout-probes"])
+        let app = launch(["--experimental"])
 
         navigate(to: "Wear & Automation", in: app)
         let automaticMedia = app.descendants(matching: .any)["setting.experimental.automaticMedia"]
@@ -128,6 +133,10 @@ final class WL5024ControlUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)[
             "setting.experimental.voiceGuidance"
         ].waitForExistence(timeout: 2))
+        let unknownSmartSwitch = app.staticTexts["setting.unknown.smartSwitch"]
+        XCTAssertTrue(unknownSmartSwitch.waitForExistence(timeout: 2))
+        XCTAssertEqual(unknownSmartSwitch.label, "Smart Switch")
+        XCTAssertEqual(unknownSmartSwitch.value as? String, "Not read from headset")
     }
 
     @MainActor
@@ -148,6 +157,8 @@ final class WL5024ControlUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["diagnostics.discovery.summary"].waitForExistence(timeout: 3))
 
         let exportButton = app.buttons["Collect & Export Log…"]
+        XCTAssertTrue(exportButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(exportButton.isEnabled)
         exportButton.click()
         XCTAssertTrue(app.staticTexts["diagnostics.export.phase"].waitForExistence(timeout: 1))
         let cancel = app.sheets.buttons["Cancel"]
@@ -164,6 +175,8 @@ final class WL5024ControlUITests: XCTestCase {
         let app = launch(["--demo", "--ui-export-direct", "--ui-focus-probe"])
         navigate(to: "Diagnostics", in: app)
         let exportButton = app.buttons["Collect & Export Log…"]
+        XCTAssertTrue(exportButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(exportButton.isEnabled)
         exportButton.click()
 
         let alert = app.sheets.firstMatch

@@ -10,6 +10,8 @@ final class BLETransport: RawHeadsetTransport {
     private var updateHandler: (@Sendable (TransportUpdate) -> Void)?
     private var pendingContinuation: CheckedContinuation<Data, any Error>?
     private var pendingMatcher: RaceResponseMatcher?
+    private var pendingTracksDispatchFailure = false
+    private var pendingRequestDispatched = false
     private var pendingWriteAcknowledged = false
     private var timeoutTask: Task<Void, Never>?
 
@@ -30,13 +32,25 @@ final class BLETransport: RawHeadsetTransport {
     func stop() {
         timeoutTask?.cancel()
         timeoutTask = nil
-        finishPending(with: .failure(CancellationError()))
+        failPending(with: CancellationError())
         source.stop()
         isReady = false
         transition(.stop)
     }
 
     func transact(_ transaction: TransportTransaction, timeout: Duration) async throws -> Data {
+        try await transact(transaction, timeout: timeout, tracksDispatchFailure: false)
+    }
+
+    func transactWrite(_ transaction: TransportTransaction, timeout: Duration) async throws -> Data {
+        try await transact(transaction, timeout: timeout, tracksDispatchFailure: true)
+    }
+
+    private func transact(
+        _ transaction: TransportTransaction,
+        timeout: Duration,
+        tracksDispatchFailure: Bool
+    ) async throws -> Data {
         guard isReady, source.isReady else { throw HeadsetError.disconnected }
         guard pendingContinuation == nil else { throw HeadsetError.busy }
 
@@ -50,9 +64,12 @@ final class BLETransport: RawHeadsetTransport {
             try await withCheckedThrowingContinuation { continuation in
                 pendingContinuation = continuation
                 pendingMatcher = transaction.expectedResponse
+                pendingTracksDispatchFailure = tracksDispatchFailure
+                pendingRequestDispatched = false
                 pendingWriteAcknowledged = false
                 do {
                     try source.write(transaction.request)
+                    pendingRequestDispatched = true
                 } catch {
                     finishPending(with: .failure(error))
                     return
@@ -67,17 +84,17 @@ final class BLETransport: RawHeadsetTransport {
                                 "gattWriteAcknowledged": String(self?.pendingWriteAcknowledged ?? false),
                             ]
                         )
-                        self?.finishPending(with: .failure(HeadsetError.timeout))
+                        self?.failPending(with: HeadsetError.timeout)
                     } catch is CancellationError {
                         // The response arrived or the transport stopped.
                     } catch {
-                        self?.finishPending(with: .failure(HeadsetError.timeout))
+                        self?.failPending(with: HeadsetError.timeout)
                     }
                 }
             }
         } onCancel: {
             Task { @MainActor [weak self] in
-                self?.finishPending(with: .failure(CancellationError()))
+                self?.failPending(with: CancellationError())
             }
         }
     }
@@ -93,7 +110,7 @@ final class BLETransport: RawHeadsetTransport {
             updateHandler?(.connectedBluetooth(name: metadata.name, identifier: metadata.identifier))
         case .disconnected(let identifier):
             isReady = false
-            finishPending(with: .failure(HeadsetError.disconnected))
+            failPending(with: HeadsetError.disconnected)
             updateHandler?(.bluetoothDisconnected(identifier: identifier))
         case .permissionDenied:
             isReady = false
@@ -131,13 +148,24 @@ final class BLETransport: RawHeadsetTransport {
                 details: ["characteristic": characteristic]
             )
         case .writeFailed(let message):
-            finishPending(with: .failure(HeadsetError.transport(message)))
+            failPending(with: HeadsetError.transport(message))
         case .failed(let message, let willRetry):
             if pendingContinuation != nil {
-                finishPending(with: .failure(HeadsetError.transport(message)))
+                failPending(with: HeadsetError.transport(message))
             }
             updateHandler?(.failed(source: .bluetooth, message: message, willRetry: willRetry))
         }
+    }
+
+    private func failPending(with error: any Error) {
+        guard pendingTracksDispatchFailure, pendingRequestDispatched else {
+            finishPending(with: .failure(error))
+            return
+        }
+        finishPending(with: .failure(DispatchedTransactionError(
+            underlying: error,
+            gattWriteAcknowledged: pendingWriteAcknowledged
+        )))
     }
 
     private func finishPending(with result: Result<Data, any Error>) {
@@ -146,6 +174,8 @@ final class BLETransport: RawHeadsetTransport {
         guard let continuation = pendingContinuation else { return }
         pendingContinuation = nil
         pendingMatcher = nil
+        pendingTracksDispatchFailure = false
+        pendingRequestDispatched = false
         pendingWriteAcknowledged = false
         continuation.resume(with: result)
     }
