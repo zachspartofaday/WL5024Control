@@ -59,6 +59,16 @@ public final class LiveHeadsetController: HeadsetController {
         transport.stop()
         snapshot.connection = .idle
         snapshot.device.transport = nil
+        snapshot.device.bluetoothSessionId = nil
+        // End of session: drop live values so a later session cannot reuse
+        // them as device-confirmed (AUD-001).
+        snapshot.values.removeAll()
+        snapshot.valueConfidence.removeAll()
+        snapshot.readiness = Dictionary(
+            uniqueKeysWithValues: HeadsetSettingKey.allCases.map { ($0, .unavailable) }
+        )
+        snapshot.lastUpdated = nil
+        snapshot.lastAttemptedAt = nil
         return publish()
     }
 
@@ -71,6 +81,7 @@ public final class LiveHeadsetController: HeadsetController {
         _ = publish()
         var firstError: (any Error)?
         var confirmedAnyValue = false
+        var failedKeys: Set<HeadsetSettingKey> = []
         var responseCache: [Data: Result<Data, any Error>] = [:]
 
         for key in Self.readableKeys {
@@ -104,6 +115,7 @@ public final class LiveHeadsetController: HeadsetController {
                 throw CancellationError()
             } catch {
                 firstError = firstError ?? error
+                failedKeys.insert(key)
                 DiagnosticRecorder.shared.record(
                     "protocol-read",
                     "Setting read failed",
@@ -115,7 +127,24 @@ public final class LiveHeadsetController: HeadsetController {
             }
         }
 
+        // Drop stale state for keys that failed so a partial refresh never
+        // presents old values as freshly confirmed.
+        for key in failedKeys {
+            snapshot.values.removeValue(forKey: key)
+            snapshot.valueConfidence.removeValue(forKey: key)
+            snapshot.readiness.removeValue(forKey: key)
+        }
+
         if confirmedAnyValue {
+            if !failedKeys.isEmpty {
+                DiagnosticRecorder.shared.record(
+                    "protocol-read",
+                    "Partial refresh completed with stale keys removed",
+                    details: [
+                        "failed": failedKeys.map(\.rawValue).sorted().joined(separator: ","),
+                    ]
+                )
+            }
             snapshot.lastUpdated = .now
             return publish()
         }
@@ -149,10 +178,31 @@ public final class LiveHeadsetController: HeadsetController {
             for: value,
             preparationResponses: preparationResponses
         )
-        for (index, writeTransaction) in writeTransactions.enumerated() {
-            try Task.checkCancellation()
-            let acknowledgement = try await transport.transact(writeTransaction, timeout: .seconds(3))
-            try qualification.acknowledgementValidator(index, acknowledgement)
+        do {
+            for (index, writeTransaction) in writeTransactions.enumerated() {
+                try Task.checkCancellation()
+                do {
+                    let acknowledgement = try await transport.transact(writeTransaction, timeout: .seconds(3))
+                    try qualification.acknowledgementValidator(index, acknowledgement)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // A later step failed after earlier steps were acknowledged:
+                    // observe and report partial device state (AUD-007). No
+                    // rollback is attempted without proven-safe ordering.
+                    if index > 0 {
+                        throw await partialWriteError(
+                            key: key,
+                            qualification: qualification,
+                            step: index,
+                            underlying: error
+                        )
+                    }
+                    throw error
+                }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
         }
         var readBackResponses: [Data] = []
         for transaction in qualification.readBackTransactions {
@@ -366,6 +416,57 @@ public final class LiveHeadsetController: HeadsetController {
         }
         guard let definition = ShippingSettingReads.all[key] else { return nil }
         return [(key, try definition.decoder([response]))]
+    }
+
+    /// After an intermediate multi-step write failure, performs qualified
+    /// read-back and reports the observed partial state. Returns the error to
+    /// throw; publishes observed values when decodable (AUD-007).
+    private func partialWriteError(
+        key: HeadsetSettingKey,
+        qualification: WriteQualification,
+        step: Int,
+        underlying: any Error
+    ) async -> any Error {
+        var readBackResponses: [Data] = []
+        do {
+            for transaction in qualification.readBackTransactions {
+                try Task.checkCancellation()
+                readBackResponses.append(
+                    try await transport.transact(transaction, timeout: .seconds(3))
+                )
+            }
+            let observed = try qualification.readBackDecoder(readBackResponses)
+            snapshot.values[key] = observed
+            snapshot.valueConfidence[key] = .deviceConfirmed
+            snapshot.lastUpdated = .now
+            _ = publish()
+            DiagnosticRecorder.shared.record(
+                "protocol-write",
+                "Multi-step write partially applied",
+                details: [
+                    "setting": key.rawValue,
+                    "failedStep": step.description,
+                    "observed": String(describing: observed),
+                    "error": underlying.localizedDescription,
+                ]
+            )
+            return HeadsetError.transport(
+                "Part of the \(key.rawValue) change was applied (observed \(String(describing: observed))). Check the setting and try again."
+            )
+        } catch is CancellationError {
+            return CancellationError()
+        } catch {
+            DiagnosticRecorder.shared.record(
+                "protocol-write",
+                "Multi-step write failed with unreadable partial state",
+                details: [
+                    "setting": key.rawValue,
+                    "failedStep": step.description,
+                    "error": underlying.localizedDescription,
+                ]
+            )
+            return underlying
+        }
     }
 
     private func handle(_ update: TransportUpdate) {

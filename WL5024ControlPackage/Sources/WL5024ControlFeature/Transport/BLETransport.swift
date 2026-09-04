@@ -102,12 +102,27 @@ final class BLETransport: RawHeadsetTransport {
             isReady = false
             updateHandler?(.bluetoothUnavailable)
         case .received(let data):
-            guard pendingContinuation != nil,
-                  TransactionResponseRouter.classify(data, pending: pendingMatcher) == .matched else {
+            guard pendingContinuation != nil else {
                 updateHandler?(.unsolicitedBluetooth(data))
                 return
             }
-            finishPending(with: .success(data))
+            switch TransactionResponseRouter.classify(data, pending: pendingMatcher) {
+            case .matched:
+                finishPending(with: .success(data))
+            case .ambiguousStatusOnly:
+                // Never complete the pending request: the bytes cannot
+                // identify their module, so completing would risk crediting a
+                // late packet to the wrong module (AUD-008). The pending
+                // transaction stays open until an exact match or timeout.
+                DiagnosticRecorder.shared.record(
+                    "bluetooth-rx",
+                    "Ambiguous status-only response ignored",
+                    details: ["bytes": DiagnosticRecorder.hex(data)]
+                )
+                updateHandler?(.unsolicitedBluetooth(data))
+            case .unsolicited:
+                updateHandler?(.unsolicitedBluetooth(data))
+            }
         case .writeAcknowledged(let characteristic):
             pendingWriteAcknowledged = true
             DiagnosticRecorder.shared.record(

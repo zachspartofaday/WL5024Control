@@ -70,6 +70,8 @@ public final class HeadsetModel {
         queuedCommands.removeAll()
         pendingSettings.removeAll()
         isCommandInFlight = false
+        retryCommand = nil
+        failure = nil
         discoveryState = .idle
         discoveryProgress = nil
         lastDiscoverySummary = nil
@@ -79,11 +81,19 @@ public final class HeadsetModel {
 
     @discardableResult
     public func refresh() -> Task<Void, Never> {
-        enqueue(.refresh)
+        guard discoveryState != .running else {
+            rejectDuringDiscovery(command: "refresh")
+            return Task {}
+        }
+        return enqueue(.refresh)
     }
 
     @discardableResult
     public func set(_ key: HeadsetSettingKey, to value: SettingValue) -> Task<Void, Never> {
+        guard discoveryState != .running else {
+            rejectDuringDiscovery(command: "set.\(key.rawValue)")
+            return Task {}
+        }
         guard snapshot.readiness(for: key).allowsWrite else {
             present(.unsupported(key), retrying: nil)
             return Task {}
@@ -93,11 +103,24 @@ public final class HeadsetModel {
 
     @discardableResult
     public func perform(_ key: HeadsetSettingKey) -> Task<Void, Never> {
+        guard discoveryState != .running else {
+            rejectDuringDiscovery(command: "action.\(key.rawValue)")
+            return Task {}
+        }
         guard snapshot.readiness(for: key).allowsWrite else {
             present(.unsupported(key), retrying: nil)
             return Task {}
         }
         return enqueue(.action(key))
+    }
+
+    private func rejectDuringDiscovery(command: String) {
+        DiagnosticRecorder.shared.record(
+            "command",
+            "Discovery exclusive rejection",
+            details: ["command": command]
+        )
+        present(.busy, retrying: nil)
     }
 
     public func value(for key: HeadsetSettingKey) -> SettingValue? {
@@ -110,16 +133,31 @@ public final class HeadsetModel {
 
     public func dismissFailure() {
         failure = nil
+        // Dismissing abandons the retry; resume any commands halted behind it.
+        retryCommand = nil
+        restartDrainIfIdle()
     }
 
     public func retryLastAction() {
         guard let retryCommand else { return }
+        guard discoveryState != .running else {
+            rejectDuringDiscovery(command: "retry.\(retryCommand.name)")
+            return
+        }
         failure = nil
-        enqueue(retryCommand)
+        // Re-run the exact failing command first; keep retryCommand until it
+        // succeeds so a later unrelated success cannot clear a live retry.
+        queuedCommands.insert(retryCommand, at: 0)
+        updatePendingSettings()
+        restartDrainIfIdle()
     }
 
     @discardableResult
     public func reconnect() -> Task<Void, Never> {
+        guard discoveryState != .running else {
+            rejectDuringDiscovery(command: "reconnect")
+            return Task {}
+        }
         failure = nil
         return enqueue(.reconnect)
     }
@@ -136,7 +174,10 @@ public final class HeadsetModel {
     public func cancelReadOnlyDiscovery() {
         guard discoveryState == .running else { return }
         if let activeCommand, activeCommand.isDiscovery {
-            queuedCommands.removeAll()
+            // Drop only discovery work; settings actions are disabled during
+            // discovery (see set/perform/refresh guards), but preserve any
+            // non-discovery commands against races instead of discarding them.
+            queuedCommands.removeAll(where: \.isDiscovery)
             commandTask?.cancel()
         } else {
             queuedCommands.removeAll(where: \.isDiscovery)
@@ -177,8 +218,12 @@ public final class HeadsetModel {
     }
 
     private func drainCommandQueue() async {
+        // When a user-visible command fails, halt with remaining work
+        // preserved; retry/dismiss explicitly resumes (AUD-006).
+        var requiresRecovery = false
         while !queuedCommands.isEmpty {
             guard !Task.isCancelled else { break }
+            if requiresRecovery { break }
             let command = queuedCommands.removeFirst()
             activeCommand = command
             isCommandInFlight = true
@@ -186,7 +231,10 @@ public final class HeadsetModel {
 
             do {
                 try await execute(command)
-                retryCommand = nil
+                // Clear retry only when its own command succeeds.
+                if retryCommand == command {
+                    retryCommand = nil
+                }
             } catch is CancellationError {
                 if command.isDiscovery {
                     discoveryState = .cancelled
@@ -209,6 +257,7 @@ public final class HeadsetModel {
                 } else {
                     retryCommand = command
                     present(headsetError, retrying: command)
+                    requiresRecovery = true
                 }
             }
             updatePendingSettings()
@@ -218,6 +267,28 @@ public final class HeadsetModel {
         pendingSettings.removeAll()
         activeCommand = nil
         commandTask = nil
+        // Restart only for cancellation-preserved work, never past a failure
+        // that still needs user recovery.
+        if !queuedCommands.isEmpty, !requiresRecovery {
+            updatePendingSettings()
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.drainCommandQueue()
+            }
+            commandTask = task
+        } else if !queuedCommands.isEmpty {
+            updatePendingSettings()
+        }
+    }
+
+    private func restartDrainIfIdle() {
+        guard commandTask == nil, !queuedCommands.isEmpty else { return }
+        updatePendingSettings()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainCommandQueue()
+        }
+        commandTask = task
     }
 
     private func execute(_ command: QueuedCommand) async throws {
@@ -290,7 +361,7 @@ public final class HeadsetModel {
     }
 }
 
-private enum QueuedCommand {
+private enum QueuedCommand: Equatable {
     case refresh
     case set(HeadsetSettingKey, SettingValue)
     case action(HeadsetSettingKey)

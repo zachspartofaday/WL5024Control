@@ -9,15 +9,17 @@ import WL5024ControlFeature
 /// described by the physical device's report descriptor. Only the established generic
 /// preference getter can be constructed here; setters, FOTA, and maintenance traffic are absent.
 enum DirectUSBProbe {
-    static func run(arguments: [String]) {
+    @discardableResult
+    static func run(arguments: [String]) -> Int32 {
         let module = arguments.first(where: { $0.hasPrefix("--module=") })
             .flatMap { UInt16($0.dropFirst("--module=".count)) }
             ?? 0x0031
         let runner = Runner(module: module)
-        guard runner.start() else { return }
+        guard runner.start() else { return runner.exitCode }
         withExtendedLifetime(runner) {
             CFRunLoopRun()
         }
+        return runner.exitCode
     }
 }
 
@@ -40,6 +42,7 @@ private extension DirectUSBProbe {
         private var timeoutTimer: Timer?
         private var lastReadError: IOReturn?
         private var finished = false
+        private(set) var exitCode: Int32 = ProbeExitStatus.success
 
         init(module: UInt16) {
             self.module = module
@@ -78,6 +81,7 @@ private extension DirectUSBProbe {
                     CFRunLoopGetMain(),
                     CFRunLoopMode.defaultMode.rawValue
                 )
+                exitCode = ProbeExitStatus.failure
                 return false
             }
 
@@ -238,6 +242,7 @@ private extension DirectUSBProbe {
         private func finish(status: String, message: String) {
             guard !finished else { return }
             finished = true
+            exitCode = status == "DONE" ? ProbeExitStatus.success : ProbeExitStatus.failure
             sendTimer?.invalidate()
             readTimer?.invalidate()
             timeoutTimer?.invalidate()

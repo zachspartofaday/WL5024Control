@@ -20,6 +20,7 @@ public struct HeadsetMenuBarView: View {
                     get: { enabled },
                     set: { model.set(.automaticMedia, to: .boolean($0)) }
                 ))
+                .disabled(model.discoveryState == .running)
             } else {
                 Text("Automatic media control: \(enabled ? "On" : "Off")")
                 Text(readOnlyExplanation)
@@ -31,6 +32,7 @@ public struct HeadsetMenuBarView: View {
                     Button("Turn On") { model.set(.automaticMedia, to: .boolean(true)) }
                     Button("Turn Off") { model.set(.automaticMedia, to: .boolean(false)) }
                 }
+                .disabled(model.discoveryState == .running)
                 Text("Experimental — response verification required")
             }
         }
@@ -40,7 +42,7 @@ public struct HeadsetMenuBarView: View {
             NSApp.activate()
         }
         Button("Refresh") { model.refresh() }
-            .disabled(!isConnected || model.isCommandInFlight)
+            .disabled(!isConnected || model.isCommandInFlight || model.discoveryState == .running)
         Divider()
         Button("Quit WL5024 Control") { NSApp.terminate(nil) }
     }

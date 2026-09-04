@@ -54,6 +54,11 @@ struct WearDetectionFlags: Sendable, Equatable {
             guard case .choice(let choice) = value else {
                 throw HeadsetError.invalidValue(key)
             }
+            // Changing sensitivity while Quick Pause is off would silently enable
+            // the feature (mode 0 -> 1/2). Gate it so the toggle stays in sync.
+            guard try quickPauseMode() != 0 else {
+                throw HeadsetError.invalidValue(key)
+            }
             let mode: UInt16
             switch choice {
             case "normal": mode = 1

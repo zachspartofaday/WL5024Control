@@ -63,7 +63,12 @@ public final class MockHeadsetController: HeadsetController {
         progress: @escaping @MainActor @Sendable (ReadOnlyDiscoveryProgress) -> Void
     ) async throws -> ReadOnlyDiscoveryResult {
         let probes = ReadOnlyDiscoveryPlan.probes
+        let startedAt = Date.now
         for (index, probe) in probes.enumerated() {
+            try Task.checkCancellation()
+            // Yield so demo-mode UI can render numeric progress and deliver
+            // the Cancel action before the loop completes.
+            try await Task.sleep(for: .milliseconds(5))
             try Task.checkCancellation()
             progress(.init(
                 completed: index + 1,
@@ -81,7 +86,7 @@ public final class MockHeadsetController: HeadsetController {
                 timeoutCount: probes.count - 11,
                 failureCount: 0,
                 decodedSettingCount: 11,
-                elapsedSeconds: 0
+                elapsedSeconds: Date.now.timeIntervalSince(startedAt)
             )
         )
     }

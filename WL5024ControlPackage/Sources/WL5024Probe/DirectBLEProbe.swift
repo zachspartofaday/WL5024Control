@@ -11,12 +11,13 @@ import WL5024ControlFeature
 enum DirectBLEProbe {
     private static let defaultPreferenceModules: [UInt16] = [0, 1, 6, 7, 8, 9, 16]
 
-    static func run(arguments: [String]) {
+    @discardableResult
+    static func run(arguments: [String]) -> Int32 {
         let options = Options(arguments: arguments)
         let runner = Runner(options: options)
-        if runner.start() {
-            CFRunLoopRun()
-        }
+        guard runner.start() else { return runner.exitCode }
+        CFRunLoopRun()
+        return runner.exitCode
     }
 }
 
@@ -114,7 +115,9 @@ private extension DirectBLEProbe {
         private var responseCount = 0
         private var timeoutCount = 0
         private var unsolicitedCount = 0
+        private var ambiguousCount = 0
         private var finished = false
+        private(set) var exitCode: Int32 = ProbeExitStatus.success
 
         init(options: Options) {
             self.options = options
@@ -193,6 +196,7 @@ private extension DirectBLEProbe {
         func start() -> Bool {
             guard !probes.isEmpty else {
                 log("ERROR", "No getter matched the supplied --only identifier.")
+                exitCode = ProbeExitStatus.usage
                 return false
             }
             log("START", "read-only direct probe; \(probes.count) requests; timeout \(options.responseTimeout)s")
@@ -339,15 +343,19 @@ private extension DirectBLEProbe {
             }
 
             let exactMatch = pendingProbe.transaction.expectedResponse.matches(data)
-            let statusOnlyMatch: Bool
-            if let frame = try? RaceFrame(decoding: data) {
-                statusOnlyMatch = frame.packetType == .response
-                    && frame.opcode == pendingProbe.transaction.expectedResponse.opcode
-                    && frame.payload.count == 1
-            } else {
-                statusOnlyMatch = false
+            if !exactMatch,
+               TransactionResponseRouter.isAmbiguousStatusOnly(
+                   data,
+                   opcode: pendingProbe.transaction.expectedResponse.opcode
+               ) {
+                // Status-only bytes cannot identify their module; count and
+                // log without attributing to the pending probe so a late
+                // packet cannot complete the wrong request (AUD-008).
+                ambiguousCount += 1
+                log("AMBIGUOUS", "status-only response cannot be attributed to \(pendingProbe.name)")
+                return
             }
-            guard exactMatch || statusOnlyMatch else {
+            guard exactMatch else {
                 unsolicitedCount += 1
                 log("UNSOLICITED", "notification did not match the pending request")
                 return
@@ -357,8 +365,7 @@ private extension DirectBLEProbe {
             let latency = pendingStartedAt.map {
                 (ProcessInfo.processInfo.systemUptime - $0) * 1_000
             } ?? 0
-            let matchKind = statusOnlyMatch ? "status-only" : "value"
-            log("MATCH", "\(pendingProbe.name) in \(format(latency))ms (\(matchKind) response)")
+            log("MATCH", "\(pendingProbe.name) in \(format(latency))ms (value response)")
             responseTimer?.invalidate()
             responseTimer = nil
             self.pendingProbe = nil
@@ -384,20 +391,25 @@ private extension DirectBLEProbe {
         }
 
         private func succeed() {
+            exitCode = ProbeExitStatus.success
             finish(
                 status: "DONE",
                 message: "requests=\(probes.count) responses=\(responseCount) "
-                    + "timeouts=\(timeoutCount) unsolicited=\(unsolicitedCount)"
+                    + "timeouts=\(timeoutCount) unsolicited=\(unsolicitedCount) ambiguous=\(ambiguousCount)"
             )
         }
 
         private func fail(_ message: String) {
+            exitCode = ProbeExitStatus.failure
             finish(status: "ERROR", message: message)
         }
 
         private func finish(status: String, message: String) {
             guard !finished else { return }
             finished = true
+            if status == "ERROR" || status == "TIMEOUT" {
+                exitCode = ProbeExitStatus.failure
+            }
             connectionTimer?.invalidate()
             responseTimer?.invalidate()
             transitionTimer?.invalidate()

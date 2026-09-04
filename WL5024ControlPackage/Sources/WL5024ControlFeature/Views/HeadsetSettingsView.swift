@@ -176,7 +176,7 @@ private struct ConnectionSummary: View {
             Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
                 .labelStyle(.iconOnly)
                 .help("Refresh headset settings")
-                .disabled(!isConnected)
+                .disabled(!isConnected || model.discoveryState == .running || model.isCommandInFlight)
         }
     }
 
@@ -241,6 +241,13 @@ private struct SettingRow: View {
     @Bindable var model: HeadsetModel
 
     private var readiness: CapabilityReadiness { model.readiness(for: key) }
+    private var isSensitivityGated: Bool {
+        guard key == .quickPauseSensitivity else { return false }
+        if case .boolean(let enabled) = model.value(for: .quickPause) {
+            return !enabled
+        }
+        return false
+    }
     private var controlWidth: CGFloat {
         key == .deviceName ? DetailLayoutMetrics.wideControlWidth : DetailLayoutMetrics.controlWidth
     }
@@ -248,19 +255,32 @@ private struct SettingRow: View {
     var body: some View {
         SettingsRowLayout(controlWidth: controlWidth) {
             VStack(alignment: .leading, spacing: 4) {
+                // The native Toggle/Picker carries the semantic name; hide the
+                // visual title from AX to leave one control identity (AUD-010).
                 Text(key.title)
                     .accessibilityIdentifier("setting.label.\(key.rawValue)")
+                    .accessibilityHidden(true)
                 Text(key.explanation)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityHidden(true)
                 if readiness != .ready {
                     Text(readiness.status)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityHidden(true)
+                }
+                if isSensitivityGated {
+                    Text("Turn on Quick Pause to change sensitivity.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityHidden(true)
                 }
             }
+            .accessibilityHidden(true)
 
             Group {
                 if let value = model.value(for: key) {
@@ -268,13 +288,13 @@ private struct SettingRow: View {
                         readOnlyValue(value)
                     } else {
                         control(value: value)
-                            .disabled(!readiness.allowsWrite || model.pendingSettings.contains(key))
+                            .disabled(!readiness.allowsWrite || model.pendingSettings.contains(key) || isSensitivityGated || model.discoveryState == .running)
                     }
                 } else if readiness == .experimental {
                     ExperimentalSettingMenu(key: key) { value in
                         model.set(key, to: value)
                     }
-                    .disabled(model.pendingSettings.contains(key))
+                    .disabled(model.pendingSettings.contains(key) || isSensitivityGated || model.discoveryState == .running)
                 } else {
                     Text("Not read from headset")
                         .foregroundStyle(.secondary)
@@ -356,6 +376,18 @@ private struct SettingRow: View {
         .foregroundStyle(.secondary)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .trailing)
+        // One semantic identity for read-only rows: title + value combined.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(key.title))
+        .accessibilityValue(valueAccessibilityText(value, prefix: prefix))
+    }
+
+    private func valueAccessibilityText(_ value: SettingValue, prefix: String) -> Text {
+        switch value {
+        case .integer(let number): Text("\(prefix) \(number)")
+        case .boolean(let enabled): Text(enabled ? "On" : "Off")
+        case .choice(let choice), .text(let choice): Text(choice)
+        }
     }
 
     private func integer(from value: SettingValue) -> Int {

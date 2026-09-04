@@ -227,7 +227,12 @@ struct RaceFrameTests {
     @Test func quickPauseUsesDDPMModesAndPreservesUnrelatedBits() throws {
         let disabled = WearDetectionFlags(rawValue: 0xA547)
         #expect(try disabled.updating(.quickPause, to: .boolean(true)).rawValue == 0xA567)
-        #expect(try disabled.updating(.quickPauseSensitivity, to: .choice("normal")).rawValue == 0xA557)
+        // Changing sensitivity while Quick Pause is off would silently enable it.
+        #expect(throws: HeadsetError.invalidValue(.quickPauseSensitivity)) {
+            try disabled.updating(.quickPauseSensitivity, to: .choice("normal"))
+        }
+        #expect(try WearDetectionFlags(rawValue: 0xA567)
+            .updating(.quickPauseSensitivity, to: .choice("normal")).rawValue == 0xA557)
         #expect(try WearDetectionFlags(rawValue: 0xA567)
             .updating(.quickPause, to: .boolean(false)).rawValue == 0xA547)
     }
@@ -295,6 +300,16 @@ struct RaceFrameTests {
         #expect(matcher.matches(matching))
         #expect(TransactionResponseRouter.classify(wrongOpcode, pending: matcher) == .unsolicited)
         #expect(TransactionResponseRouter.classify(matching, pending: matcher) == .matched)
+    }
+
+    @Test func statusOnlyPreferenceResponseIsAmbiguousNotMatched() {
+        let matcher = WL5024Command.getPreference(module: 10).transaction.expectedResponse
+        let statusOnly = RaceFrame(packetType: .response, opcode: 0x2C83, payload: Data([0])).encoded
+        #expect(!matcher.matches(statusOnly))
+        #expect(TransactionResponseRouter.classify(statusOnly, pending: matcher) == .ambiguousStatusOnly)
+        // Wrong opcode is not ambiguous even with one-byte payload.
+        let otherOpcode = RaceFrame(packetType: .response, opcode: 0x0021, payload: Data([0])).encoded
+        #expect(TransactionResponseRouter.classify(otherOpcode, pending: matcher) == .unsolicited)
     }
 }
 

@@ -1,6 +1,14 @@
 import Foundation
 import WL5024ControlFeature
 
+enum ProbeExitStatus {
+    static let success: Int32 = 0
+    /// Invalid arguments (sysexits EX_USAGE).
+    static let usage: Int32 = 64
+    /// Setup failure, timeout, I/O failure, or malformed response (EX_IOERR).
+    static let failure: Int32 = 74
+}
+
 @main
 struct WL5024Probe {
     static func main() {
@@ -8,12 +16,14 @@ struct WL5024Probe {
         let arguments = Set(rawArguments)
 
         if arguments.contains("--usb") {
-            DirectUSBProbe.run(arguments: rawArguments)
+            let code = DirectUSBProbe.run(arguments: rawArguments)
+            if code != ProbeExitStatus.success { Foundation.exit(code) }
             return
         }
 
         if arguments.contains("--live") {
-            DirectBLEProbe.run(arguments: rawArguments)
+            let code = DirectBLEProbe.run(arguments: rawArguments)
+            if code != ProbeExitStatus.success { Foundation.exit(code) }
             return
         }
 

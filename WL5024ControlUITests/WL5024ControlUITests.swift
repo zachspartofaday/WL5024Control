@@ -22,11 +22,11 @@ final class WL5024ControlUITests: XCTestCase {
         }
 
         navigate(to: "Wear & Automation", in: app)
-        let label = app.staticTexts["setting.label.wearDetection"]
         let checkBox = app.checkBoxes["Wear detection"]
         XCTAssertTrue(checkBox.waitForExistence(timeout: 2))
         XCTAssertTrue(checkBox.isEnabled)
-        XCTAssertLessThan(label.frame.maxX, checkBox.frame.minX)
+        // AUD-010: one semantic identity per row — no duplicate staticText name.
+        XCTAssertFalse(app.staticTexts["Wear detection"].exists)
 
         let automaticMedia = app.checkBoxes["Automatically pause and resume media"]
         XCTAssertEqual(checkBox.frame.maxX, automaticMedia.frame.maxX, accuracy: 2)
@@ -53,11 +53,9 @@ final class WL5024ControlUITests: XCTestCase {
         }
 
         navigate(to: "Wear & Automation", in: app)
-        let label = app.staticTexts["setting.label.autoPowerOff"]
         let selector = app.popUpButtons["Automatic power off"]
         XCTAssertTrue(selector.waitForExistence(timeout: 2))
-        XCTAssertLessThanOrEqual(label.frame.maxY, selector.frame.minY)
-        XCTAssertFalse(label.frame.intersects(selector.frame))
+        XCTAssertFalse(app.staticTexts["Automatic power off"].exists)
     }
 
     @MainActor
@@ -68,7 +66,9 @@ final class WL5024ControlUITests: XCTestCase {
         let automaticMedia = app.checkBoxes["Automatically pause and resume media"]
         XCTAssertTrue(automaticMedia.waitForExistence(timeout: 3))
         XCTAssertFalse(automaticMedia.isEnabled)
-        XCTAssertTrue(app.staticTexts["Current value available; writing awaits hardware validation"].exists)
+        // AUD-010: readiness status is exposed as the control's hint, not a
+        // duplicate staticText name.
+        XCTAssertFalse(app.staticTexts["Automatically pause and resume media"].exists)
 
         let statusItem = app.statusItems["WL5024 connected"]
         XCTAssertTrue(statusItem.waitForExistence(timeout: 3))
@@ -85,9 +85,9 @@ final class WL5024ControlUITests: XCTestCase {
         navigate(to: "Wear & Automation", in: app)
         let automaticMedia = app.descendants(matching: .any)["setting.experimental.automaticMedia"]
         XCTAssertTrue(automaticMedia.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts[
-            "Experimental write — response and read-back verification required"
-        ].exists)
+        // AUD-010: experimental menu exposes "Set value for …", not a
+        // duplicate row-title staticText.
+        XCTAssertTrue(app.buttons["Set value for Automatically pause and resume media"].waitForExistence(timeout: 3))
         automaticMedia.click()
         let turnOn = automaticMedia.menuItems["Turn On"]
         XCTAssertTrue(turnOn.waitForExistence(timeout: 2))
@@ -95,7 +95,6 @@ final class WL5024ControlUITests: XCTestCase {
         XCTAssertTrue(app.checkBoxes["Automatically pause and resume media"].waitForExistence(timeout: 2))
 
         navigate(to: "Noise Control", in: app)
-        XCTAssertTrue(app.staticTexts["setting.label.environmentDetection"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.descendants(matching: .any)[
             "setting.experimental.advancedPassthrough"
         ].exists)
@@ -151,19 +150,39 @@ final class WL5024ControlUITests: XCTestCase {
     }
 
     @MainActor
-    func testAppearanceAndAccessibilityLaunchProfiles() throws {
-        let profiles = [
-            ["--demo", "--appearance-light"],
-            ["--demo", "--appearance-dark"],
-            ["--demo", "-AppleIncreaseContrast", "YES"],
-            ["--demo", "-AppleReduceTransparency", "YES"],
+    func testDiscoveryCancellationShowsPartialResult() throws {
+        // AUD-011: mock discovery yields so progress renders and Cancel is
+        // deliverable mid-run in demo mode.
+        let app = launch(["--demo"])
+        navigate(to: "Diagnostics", in: app)
+        let runButton = app.buttons["Run Read-only Discovery"]
+        XCTAssertTrue(runButton.waitForExistence(timeout: 2))
+        runButton.click()
+        XCTAssertTrue(app.descendants(matching: .any)["diagnostics.discovery.progress"].waitForExistence(timeout: 2))
+        let cancelButton = app.buttons["Cancel Discovery"]
+        XCTAssertTrue(cancelButton.waitForExistence(timeout: 2))
+        cancelButton.click()
+        XCTAssertTrue(app.staticTexts["Discovery cancelled. Partial results remain in the diagnostic log."].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testLaunchSmokeAcrossAppearanceProfiles() throws {
+        // AUD-012: launch smoke only — proves the app starts and exposes one
+        // control per appearance profile. Visual legibility, contrast,
+        // transparency, clipping, and overlap remain manual checklist items.
+        let profiles: [([String], String)] = [
+            (["--demo", "--appearance-light"], "Light"),
+            (["--demo", "--appearance-dark"], "Dark"),
+            (["--demo", "-AppleIncreaseContrast", "YES"], "IncreaseContrast"),
+            (["--demo", "-AppleReduceTransparency", "YES"], "ReduceTransparency"),
         ]
 
-        for arguments in profiles {
+        for (arguments, name) in profiles {
             let app = launch(arguments)
-            XCTAssertTrue(app.staticTexts["Dell WL5024"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["Dell WL5024"].waitForExistence(timeout: 5), "Missing identity in \(name)")
             navigate(to: "Calls & Microphone", in: app)
-            XCTAssertTrue(app.popUpButtons["Sidetone"].exists)
+            XCTAssertTrue(app.popUpButtons["Sidetone"].exists, "Missing Sidetone in \(name)")
+            attachScreenshot(named: "LaunchSmoke-\(name)", app: app)
             app.terminate()
         }
     }
