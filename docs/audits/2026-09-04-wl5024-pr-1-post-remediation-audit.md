@@ -8,9 +8,21 @@
 | PR merge base | `ddd6410cc075ce395e1704cd3d5d81a02ba61bae` |
 | Remediation delta | `bf6d0d59eb5d38b73bf6f6f9e80866df0db61a82...2c7301056c7e63b6df64733be2f1aecafadc3582` |
 
-Verdict: **Do not merge the current head.** The latest remediation leaves production setting controls unnamed to assistive technology, hides required setting/status context behind optional hints, and makes several automated scenarios observe a test-only accessibility tree. The same head also retains an unqualified first-write failure path that can leave a previously confirmed value visible after the hardware may have accepted the command.
+Historical verdict for audited head `2c73010`: **Do not merge.** That remediation left production setting controls unnamed to assistive technology, hid required setting/status context behind optional hints, and made several automated scenarios observe a test-only accessibility tree. The same head also retained an unqualified first-write failure path that could leave a previously confirmed value visible after the hardware may have accepted the command.
 
 Change scope: report only. No application, protocol, test, project, or asset implementation was changed. The audit reviewed the ten-file remediation delta first, then expanded through its consumers and the full PR diff. The fresh clone contained 90 tracked files, including 56 Swift files and 7 Swift test files; PR #1 changes 67 tracked paths relative to `main`.
+
+## Remediation disposition
+
+All three findings were resolved on PR #1 at `df468c9c43c691b0c5a8a07fc05e4f3e90006cc5`. No automated blocker from this audit remains at that head.
+
+| Finding | Disposition | Resolution evidence |
+| --- | --- | --- |
+| `WL5024-POST-AUD-001` | Resolved | Production setting explanations and readiness/gating status remain in the accessibility tree; native checkbox and pop-up controls expose the visible setting name without `--ui-layout-probes`; unknown rows expose both the setting name and “Not read from headset.” Production-mode UI assertions cover Ready, read-only, and Experimental/unknown states, and direct macOS AX inspection confirmed the checkbox label and native role. |
+| `WL5024-POST-AUD-002` | Resolved | The transport now distinguishes write transactions and preserves typed post-dispatch failure/cancellation state. The controller reads back ambiguous failures at the first or later write step and invalidates the affected setting or wear-detection composite when current state cannot be established. Regression fixtures start from confirmed values and cover pre-dispatch preservation, dispatched failure recovery, cancellation invalidation, and unreadable composite invalidation. |
+| `WL5024-POST-AUD-003` | Resolved | Both Diagnostics export focus scenarios now synchronize on an existing, enabled export button before clicking. The two focus tests passed three iterations each (six invocations) after the repair. |
+
+Post-remediation validation at `df468c9`: canonical macOS build passed; canonical workspace test passed 96/96 with zero skips; canonical Swift package test passed; canonical Swift package Release build passed; `git diff --check` passed. Manual VoiceOver/Voice Control walkthroughs and physical forced first-response loss remain field-verification items rather than unresolved source findings.
 
 ## Finding registry
 
