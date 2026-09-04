@@ -75,7 +75,9 @@ public struct HeadsetSnapshot: Sendable, Equatable {
             ),
             capabilities: capabilities,
             values: values,
-            readiness: Dictionary(uniqueKeysWithValues: capabilities.map { ($0, .ready) }),
+            readiness: Dictionary(uniqueKeysWithValues: capabilities.map {
+                ($0, $0.controlKind == .readOnlyValue ? .readOnly : .ready)
+            }),
             valueConfidence: Dictionary(uniqueKeysWithValues: capabilities.map { ($0, .simulated) }),
             lastUpdated: .now
         )

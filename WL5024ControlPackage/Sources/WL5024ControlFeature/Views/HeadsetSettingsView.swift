@@ -10,28 +10,23 @@ public struct HeadsetSettingsView: View {
 
     public var body: some View {
         NavigationSplitView {
-            List(SettingsPage.allCases, selection: $model.selectedPage) { page in
-                Label {
-                    Text(page.title)
-                } icon: {
-                    Image(systemName: page.symbolName)
-                }
-                .tag(page)
+            List(CapabilityCatalog.visiblePages, selection: $model.selectedPage) { page in
+                Label(page.title, systemImage: page.symbolName)
+                    .tag(page)
             }
+            .accessibilityLabel("Settings destinations")
             .navigationSplitViewColumnWidth(min: 190, ideal: 210)
         } detail: {
-            Group {
-                switch model.selectedPage ?? .overview {
-                case .overview:
-                    OverviewView(model: model)
-                case .diagnostics:
-                    DiagnosticsView(model: model)
-                case let page:
-                    SettingsPageView(page: page, model: model)
-                }
+            switch model.selectedPage ?? .overview {
+            case .overview:
+                OverviewView(model: model)
+            case .diagnostics:
+                DiagnosticsView(model: model)
+            case let page:
+                SettingsPageView(page: page, model: model)
             }
-            .navigationTitle(Text((model.selectedPage ?? .overview).title))
         }
+        .navigationTitle(Text((model.selectedPage ?? .overview).title))
         .frame(minWidth: 720, minHeight: 500)
         .alert(
             model.failure?.title ?? LocalizedStringResource("Unable to update the headset", bundle: #bundle),
@@ -54,7 +49,7 @@ public struct HeadsetSettingsView: View {
                 Button("Try Again", action: model.retryLastAction)
                 Button("Cancel", role: .cancel, action: model.dismissFailure)
             case .reconnect:
-                Button("Reconnect", action: model.reconnect)
+                Button("Reconnect") { model.reconnect() }
                 Button("Cancel", role: .cancel, action: model.dismissFailure)
             case .openBluetoothSettings:
                 Button("Open Bluetooth Settings", action: openBluetoothSettings)
@@ -78,82 +73,110 @@ private struct OverviewView: View {
     @Bindable var model: HeadsetModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                connectionCard
+        DetailPageContainer {
+            ConnectionSummary(model: model)
 
-                GroupBox {
-                    SettingRow(key: .automaticMedia, model: model)
-                } label: {
-                    Label("Wear-sensor media control", systemImage: "playpause")
-                }
+            GroupBox {
+                SettingRow(key: .automaticMedia, model: model)
+                    .padding(DetailLayoutMetrics.cardInset)
+            } label: {
+                Label("Wear-sensor media control", systemImage: "playpause")
+            }
 
-                if case .qualificationRequired = model.snapshot.connection {
-                    ContentUnavailableView {
-                        Label("Receiver detected", systemImage: "cable.connector")
-                    } description: {
-                        Text("The app found the USB receiver. Its HID report identifiers will be captured and validated when the headset is available.")
-                    }
-                }
-
-                if model.snapshot.connection == .bluetoothPermissionDenied {
-                    ContentUnavailableView {
-                        Label("Bluetooth access is off", systemImage: "bluetooth.slash")
-                    } description: {
-                        Text("Allow WL5024 Control to use Bluetooth, then return here and reconnect.")
-                    } actions: {
-                        Button("Open Bluetooth Settings", action: openBluetoothSettings)
-                    }
-                }
-
-                if model.snapshot.connection == .failed {
-                    ContentUnavailableView {
-                        Label("Unable to connect", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text("Turn on the headset, then reconnect. Technical details are available in Diagnostics.")
-                    } actions: {
-                        Button("Reconnect", action: model.reconnect)
-                    }
+            if case .qualificationRequired = model.snapshot.connection {
+                ContentUnavailableView {
+                    Label("Receiver detected", systemImage: "cable.connector")
+                } description: {
+                    Text("The app found the USB receiver. Its HID report identifiers will be captured and validated when the headset is available.")
                 }
             }
-            .padding(24)
-            .frame(maxWidth: 720, alignment: .leading)
+
+            if model.snapshot.connection == .bluetoothPermissionDenied {
+                ContentUnavailableView {
+                    Label("Bluetooth access is off", systemImage: "bluetooth.slash")
+                } description: {
+                    Text("Allow WL5024 Control to use Bluetooth, then return here and reconnect.")
+                } actions: {
+                    Button("Open Bluetooth Settings", action: openBluetoothSettings)
+                }
+            }
+
+            if model.snapshot.connection == .failed {
+                ContentUnavailableView {
+                    Label("Unable to connect", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text("Turn on the headset, then reconnect. Technical details are available in Diagnostics.")
+                } actions: {
+                    Button("Reconnect") { model.reconnect() }
+                }
+            }
         }
     }
 
-    private var connectionCard: some View {
-        GroupBox {
-            HStack(spacing: 16) {
-                Image(systemName: "headphones")
-                    .font(.system(size: 34))
-                    .foregroundStyle(connectionColor)
-                    .frame(width: 48)
+    private func openBluetoothSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Bluetooth-Settings.extension") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+}
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.snapshot.device.model)
-                        .font(.title2.weight(.semibold))
-                    Text(connectionText)
-                        .foregroundStyle(.secondary)
-                    if let firmware = model.snapshot.device.headsetFirmware {
-                        Text("Firmware \(firmware)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+private struct ConnectionSummary: View {
+    @Bindable var model: HeadsetModel
+
+    var body: some View {
+        GroupBox {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    identity
+                    Spacer(minLength: 16)
+                    statusControls
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    identity
+                    HStack {
+                        Spacer()
+                        statusControls
                     }
                 }
+            }
+            .padding(DetailLayoutMetrics.cardInset)
+        }
+    }
 
-                Spacer()
+    private var identity: some View {
+        HStack(spacing: 16) {
+            Image(systemName: "headphones")
+                .font(.system(size: 34))
+                .foregroundStyle(isConnected ? .green : .secondary)
+                .frame(width: 48)
+                .accessibilityHidden(true)
 
-                if let battery = model.snapshot.device.batteryPercent {
-                    Label("\(battery)%", systemImage: batterySymbol(battery))
-                        .font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.snapshot.device.model)
+                    .font(.title2.weight(.semibold))
+                Text(connectionText)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let firmware = model.snapshot.device.headsetFirmware {
+                    Text("Firmware \(firmware)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
 
-                Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
-                    .labelStyle(.iconOnly)
+    private var statusControls: some View {
+        HStack(spacing: 12) {
+            if let battery = model.snapshot.device.batteryPercent {
+                Label("\(battery)%", systemImage: batterySymbol(battery))
+                    .font(.headline)
+            }
+            Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
+                .labelStyle(.iconOnly)
                 .help("Refresh headset settings")
                 .disabled(!isConnected)
-            }
-            .padding(8)
         }
     }
 
@@ -174,10 +197,6 @@ private struct OverviewView: View {
         }
     }
 
-    private var connectionColor: Color {
-        isConnected ? .green : .secondary
-    }
-
     private func batterySymbol(_ percentage: Int) -> String {
         switch percentage {
         case 76...: "battery.100percent"
@@ -186,13 +205,6 @@ private struct OverviewView: View {
         default: "battery.25percent"
         }
     }
-
-    private func openBluetoothSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.Bluetooth-Settings.extension") else {
-            return
-        }
-        NSWorkspace.shared.open(url)
-    }
 }
 
 private struct SettingsPageView: View {
@@ -200,20 +212,27 @@ private struct SettingsPageView: View {
     @Bindable var model: HeadsetModel
 
     private var settings: [HeadsetSettingKey] {
-        HeadsetSettingKey.allCases.filter { $0.page == page }
+        CapabilityCatalog.interactiveSettings.filter { $0.page == page }
     }
 
     var body: some View {
-        Form {
-            Section {
-                ForEach(settings) { key in
-                    SettingRow(key: key, model: model)
+        DetailPageContainer {
+            SettingsCard {
+                VStack(spacing: 0) {
+                    ForEach(Array(settings.enumerated()), id: \.element.id) { index, key in
+                        SettingRow(key: key, model: model)
+                        if index < settings.count - 1 {
+                            Divider()
+                        }
+                    }
                 }
-            } footer: {
-                Text("Only settings marked Ready can be changed. Settings awaiting hardware validation remain safely disabled.")
             }
+
+            Text("Ready settings are verified. Experimental settings can be changed, but require a response and matching read-back before the app reports success.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, DetailLayoutMetrics.cardInset)
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -221,33 +240,50 @@ private struct SettingRow: View {
     let key: HeadsetSettingKey
     @Bindable var model: HeadsetModel
 
+    private var readiness: CapabilityReadiness { model.readiness(for: key) }
+    private var controlWidth: CGFloat {
+        key == .deviceName ? DetailLayoutMetrics.wideControlWidth : DetailLayoutMetrics.controlWidth
+    }
+
     var body: some View {
-        LabeledContent {
-            VStack(alignment: .trailing, spacing: 4) {
-                if let value = model.value(for: key) {
-                    control(value: value)
-                        .frame(maxWidth: 280)
-                        .disabled(!model.readiness(for: key).allowsWrite || model.pendingSettings.contains(key))
-                } else {
-                    Text("Not read from headset")
-                        .foregroundStyle(.secondary)
-                }
-                if model.readiness(for: key) != .ready {
-                    Text(model.readiness(for: key).status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 3) {
+        SettingsRowLayout(controlWidth: controlWidth) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(key.title)
+                    .accessibilityIdentifier("setting.label.\(key.rawValue)")
                 Text(key.explanation)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if readiness != .ready {
+                    Text(readiness.status)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            .padding(.vertical, 4)
+
+            Group {
+                if let value = model.value(for: key) {
+                    if key.controlKind == .readOnlyValue {
+                        readOnlyValue(value)
+                    } else {
+                        control(value: value)
+                            .disabled(!readiness.allowsWrite || model.pendingSettings.contains(key))
+                    }
+                } else if readiness == .experimental {
+                    ExperimentalSettingMenu(key: key) { value in
+                        model.set(key, to: value)
+                    }
+                    .disabled(model.pendingSettings.contains(key))
+                } else {
+                    Text("Not read from headset")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .accessibilityHint(readiness == .ready ? Text("") : Text(readiness.status))
         }
+        .padding(.vertical, DetailLayoutMetrics.rowVerticalInset)
     }
 
     @ViewBuilder
@@ -255,17 +291,16 @@ private struct SettingRow: View {
         switch key.controlKind {
         case .toggle:
             Toggle(key.title, isOn: Binding(
-                get: {
-                    if case .boolean(let enabled) = value { enabled } else { false }
-                },
+                get: { if case .boolean(let enabled) = value { enabled } else { false } },
                 set: { model.set(key, to: .boolean($0)) }
             ))
             .labelsHidden()
+            .frame(width: DetailLayoutMetrics.pickerWidth, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+
         case .choices:
             Picker(key.title, selection: Binding(
-                get: {
-                    if case .choice(let selection) = value { selection } else { "" }
-                },
+                get: { if case .choice(let selection) = value { selection } else { "" } },
                 set: { model.set(key, to: .choice($0)) }
             )) {
                 ForEach(key.choices) { choice in
@@ -273,6 +308,9 @@ private struct SettingRow: View {
                 }
             }
             .labelsHidden()
+            .frame(width: DetailLayoutMetrics.pickerWidth, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+
         case .level(let range, let step):
             LevelSettingControl(
                 key: key,
@@ -281,6 +319,7 @@ private struct SettingRow: View {
                 step: step,
                 apply: { model.set(key, to: .integer($0)) }
             )
+
         case .text:
             TextSettingControl(
                 label: key.title,
@@ -288,9 +327,35 @@ private struct SettingRow: View {
                 apply: { model.set(key, to: .text($0)) }
             )
             .id(text(from: value))
+
         case .action:
             Button("Play Headset Sound") { model.perform(key) }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+
+        case .readOnlyValue:
+            readOnlyValue(value)
         }
+    }
+
+    @ViewBuilder
+    private func readOnlyValue(_ value: SettingValue) -> some View {
+        let prefix = switch key {
+        case .micFlipAction: "Action"
+        case .ucProfile: "Profile"
+        case .ucAppStatus: "Status"
+        case .leAudioFeatureMode: "Mode"
+        default: "Value"
+        }
+        Group {
+            switch value {
+            case .integer(let number): Text("\(prefix) \(number)")
+            case .boolean(let enabled): Text(enabled ? "On" : "Off")
+            case .choice(let choice), .text(let choice): Text(choice)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     private func integer(from value: SettingValue) -> Int {
@@ -314,11 +379,12 @@ private struct TextSettingControl: View {
     }
 
     var body: some View {
-        HStack {
+        HStack(spacing: 12) {
             TextField(label, text: $value)
                 .onSubmit { apply(value) }
             Button("Apply Name") { apply(value) }
         }
+        .frame(width: DetailLayoutMetrics.wideControlWidth)
     }
 }
 
@@ -346,23 +412,25 @@ private struct LevelSettingControl: View {
     }
 
     var body: some View {
-        HStack {
+        HStack(spacing: 12) {
             Slider(
                 value: $draftValue,
                 in: Double(range.lowerBound)...Double(range.upperBound),
                 step: Double(step)
             ) { editing in
-                if !editing {
-                    apply(Int(draftValue.rounded()))
-                }
+                if !editing { apply(Int(draftValue.rounded())) }
             } label: {
                 Text(key.title)
             }
+            .labelsHidden()
+            .accessibilityValue(Int(draftValue.rounded()).formatted())
+
             Text(Int(draftValue.rounded()).formatted())
                 .monospacedDigit()
-                .frame(minWidth: 28, alignment: .trailing)
+                .frame(width: DetailLayoutMetrics.sliderValueWidth, alignment: .trailing)
                 .accessibilityHidden(true)
         }
+        .frame(width: DetailLayoutMetrics.controlWidth)
         .onChange(of: currentValue) {
             draftValue = Double(currentValue)
         }

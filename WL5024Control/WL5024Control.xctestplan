@@ -18,6 +18,7 @@
   },
   "testTargets" : [
     {
+      "parallelizable" : false,
       "target" : {
         "containerPath" : "container:WL5024Control.xcodeproj",
         "identifier" : "8BC265732DEDD3F500F279A4",

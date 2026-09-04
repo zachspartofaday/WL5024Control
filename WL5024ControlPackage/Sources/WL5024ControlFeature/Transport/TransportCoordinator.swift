@@ -2,10 +2,19 @@ import Foundation
 
 @MainActor
 final class TransportCoordinator: HeadsetTransporting {
-    private let bluetooth = BLETransport()
-    private let hidMonitor = HIDMonitor()
+    private let bluetooth: any RawHeadsetTransport
+    private let hidMonitor: any HIDMonitoring
     private var updateHandler: (@Sendable (TransportUpdate) -> Void)?
     private(set) var activeKind: TransportKind?
+    private var activeBluetoothIdentifier: UUID?
+
+    init(
+        bluetooth: any RawHeadsetTransport = BLETransport(),
+        hidMonitor: any HIDMonitoring = HIDMonitor()
+    ) {
+        self.bluetooth = bluetooth
+        self.hidMonitor = hidMonitor
+    }
 
     func start(updateHandler: @escaping @Sendable (TransportUpdate) -> Void) {
         self.updateHandler = updateHandler
@@ -26,6 +35,7 @@ final class TransportCoordinator: HeadsetTransporting {
         bluetooth.stop()
         hidMonitor.stop()
         activeKind = nil
+        activeBluetoothIdentifier = nil
         updateHandler = nil
     }
 
@@ -37,10 +47,16 @@ final class TransportCoordinator: HeadsetTransporting {
     }
 
     private func handleBluetooth(_ update: TransportUpdate) {
-        if case .connectedBluetooth = update, activeKind == nil {
+        if case .connectedBluetooth(_, let identifier) = update, activeKind == nil {
             activeKind = .bluetooth
-        } else if case .bluetoothDisconnected = update, activeKind == .bluetooth {
+            activeBluetoothIdentifier = identifier
+        } else if case .bluetoothDisconnected(let identifier) = update,
+                  activeKind == .bluetooth,
+                  activeBluetoothIdentifier == identifier {
             activeKind = nil
+            activeBluetoothIdentifier = nil
+        } else if case .bluetoothDisconnected = update {
+            return
         }
         updateHandler?(update)
     }

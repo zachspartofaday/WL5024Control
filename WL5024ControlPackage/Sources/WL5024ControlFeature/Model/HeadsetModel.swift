@@ -9,6 +9,9 @@ public final class HeadsetModel {
     public private(set) var pendingSettings: Set<HeadsetSettingKey> = []
     public private(set) var failure: HeadsetFailure?
     public private(set) var isCommandInFlight = false
+    public private(set) var discoveryState: ReadOnlyDiscoveryState = .idle
+    public private(set) var discoveryProgress: ReadOnlyDiscoveryProgress?
+    public private(set) var lastDiscoverySummary: ReadOnlyDiscoverySummary?
     public private(set) var didStart = false
     public let demoMode: Bool
 
@@ -16,7 +19,9 @@ public final class HeadsetModel {
     private var eventTask: Task<Void, Never>?
     private var commandTask: Task<Void, Never>?
     private var queuedCommands: [QueuedCommand] = []
+    private var activeCommand: QueuedCommand?
     private var retryCommand: QueuedCommand?
+    private var lastAppliedRevision: UInt64 = 0
 
     public convenience init(demoMode: Bool = false) {
         self.init(
@@ -25,7 +30,7 @@ public final class HeadsetModel {
         )
     }
 
-    init(demoMode: Bool, controller: any HeadsetController) {
+    public init(demoMode: Bool, controller: any HeadsetController) {
         self.demoMode = demoMode
         self.controller = controller
         snapshot = demoMode
@@ -47,14 +52,14 @@ public final class HeadsetModel {
             for await event in events {
                 guard let self else { return }
                 switch event {
-                case .snapshot(let newSnapshot):
-                    snapshot = newSnapshot
+                case .snapshot(let update):
+                    apply(update)
                 case .error(let error):
                     present(error, retrying: .reconnect)
                 }
             }
         }
-        await controller.start()
+        apply(await controller.start())
     }
 
     public func stop() async {
@@ -65,7 +70,10 @@ public final class HeadsetModel {
         queuedCommands.removeAll()
         pendingSettings.removeAll()
         isCommandInFlight = false
-        await controller.stop()
+        discoveryState = .idle
+        discoveryProgress = nil
+        lastDiscoverySummary = nil
+        apply(await controller.stop())
         didStart = false
     }
 
@@ -110,9 +118,31 @@ public final class HeadsetModel {
         enqueue(retryCommand)
     }
 
-    public func reconnect() {
+    @discardableResult
+    public func reconnect() -> Task<Void, Never> {
         failure = nil
-        enqueue(.reconnect)
+        return enqueue(.reconnect)
+    }
+
+    @discardableResult
+    public func runReadOnlyDiscovery() -> Task<Void, Never> {
+        guard discoveryState != .running else { return commandTask ?? Task {} }
+        discoveryState = .running
+        discoveryProgress = nil
+        lastDiscoverySummary = nil
+        return enqueue(.discovery)
+    }
+
+    public func cancelReadOnlyDiscovery() {
+        guard discoveryState == .running else { return }
+        if let activeCommand, activeCommand.isDiscovery {
+            queuedCommands.removeAll()
+            commandTask?.cancel()
+        } else {
+            queuedCommands.removeAll(where: \.isDiscovery)
+            discoveryState = .cancelled
+            discoveryProgress = nil
+        }
     }
 
     public func collectDiagnosticReport() async throws -> DiagnosticReport {
@@ -150,6 +180,7 @@ public final class HeadsetModel {
         while !queuedCommands.isEmpty {
             guard !Task.isCancelled else { break }
             let command = queuedCommands.removeFirst()
+            activeCommand = command
             isCommandInFlight = true
             updatePendingSettings(active: command.settingKey)
 
@@ -157,6 +188,10 @@ public final class HeadsetModel {
                 try await execute(command)
                 retryCommand = nil
             } catch is CancellationError {
+                if command.isDiscovery {
+                    discoveryState = .cancelled
+                    discoveryProgress = nil
+                }
                 break
             } catch {
                 let headsetError = error as? HeadsetError ?? .transport(error.localizedDescription)
@@ -168,30 +203,49 @@ public final class HeadsetModel {
                         "error": error.localizedDescription,
                     ]
                 )
-                retryCommand = command
-                present(headsetError, retrying: command)
+                if command.isDiscovery {
+                    discoveryState = .failed(error.localizedDescription)
+                    discoveryProgress = nil
+                } else {
+                    retryCommand = command
+                    present(headsetError, retrying: command)
+                }
             }
             updatePendingSettings()
         }
 
         isCommandInFlight = false
         pendingSettings.removeAll()
+        activeCommand = nil
         commandTask = nil
     }
 
     private func execute(_ command: QueuedCommand) async throws {
         switch command {
         case .refresh:
-            snapshot = try await controller.refresh()
+            apply(try await controller.refresh())
         case .set(let key, let value):
-            snapshot = try await controller.set(key, value: value)
+            apply(try await controller.set(key, value: value))
         case .action(let key):
-            snapshot = try await controller.perform(key)
+            apply(try await controller.perform(key))
         case .reconnect:
-            await controller.stop()
-            snapshot.connection = .searching
-            await controller.start()
+            apply(await controller.stop())
+            apply(await controller.start())
+        case .discovery:
+            let result = try await controller.discoverReadOnly { [weak self] progress in
+                self?.discoveryProgress = progress
+            }
+            apply(result.update)
+            lastDiscoverySummary = result.summary
+            discoveryState = .completed
+            discoveryProgress = nil
         }
+    }
+
+    func apply(_ update: HeadsetStateUpdate) {
+        guard update.revision > lastAppliedRevision else { return }
+        lastAppliedRevision = update.revision
+        snapshot = update.snapshot
     }
 
     private func updatePendingSettings(active: HeadsetSettingKey? = nil) {
@@ -241,12 +295,17 @@ private enum QueuedCommand {
     case set(HeadsetSettingKey, SettingValue)
     case action(HeadsetSettingKey)
     case reconnect
+    case discovery
 
     var settingKey: HeadsetSettingKey? {
         switch self {
         case .set(let key, _), .action(let key): key
-        case .refresh, .reconnect: nil
+        case .refresh, .reconnect, .discovery: nil
         }
+    }
+
+    var isDiscovery: Bool {
+        if case .discovery = self { true } else { false }
     }
 
     var name: String {
@@ -255,6 +314,7 @@ private enum QueuedCommand {
         case .set(let key, _): "set.\(key.rawValue)"
         case .action(let key): "action.\(key.rawValue)"
         case .reconnect: "reconnect"
+        case .discovery: "read-only-discovery"
         }
     }
 }

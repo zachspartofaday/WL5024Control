@@ -18,9 +18,7 @@ struct TransportStateTests {
             connection: .connected(.bluetooth),
             device: .init(transport: .bluetooth, receiverDetected: true)
         )
-
         TransportStateReducer.apply(.receiverRemoved, to: &snapshot)
-
         #expect(snapshot.connection == .connected(.bluetooth))
         #expect(snapshot.device.transport == .bluetooth)
         #expect(!snapshot.device.receiverDetected)
@@ -31,116 +29,279 @@ struct TransportStateTests {
             connection: .connected(.bluetooth),
             device: .init(transport: .bluetooth, receiverDetected: true)
         )
-
-        TransportStateReducer.apply(.bluetoothDisconnected, to: &snapshot)
-
+        TransportStateReducer.apply(.bluetoothDisconnected(identifier: UUID()), to: &snapshot)
         #expect(snapshot.connection == .qualificationRequired(.receiver))
         #expect(snapshot.device.transport == .receiver)
     }
 
     @Test @MainActor func refreshFailureThrowsWithoutMarkingDataFresh() async {
-        let transport = FakeHeadsetTransport(
-            responses: [.failure(HeadsetError.timeout)]
-        )
+        let transport = FakeHeadsetTransport(responses: [.failure(HeadsetError.timeout)])
         let controller = LiveHeadsetController(transport: transport)
-        await controller.start()
+        _ = await controller.start()
 
-        await #expect(throws: HeadsetError.timeout) {
-            try await controller.refresh()
-        }
+        await #expect(throws: HeadsetError.timeout) { try await controller.refresh() }
         #expect(controller.currentSnapshot.lastUpdated == nil)
         #expect(controller.currentSnapshot.lastAttemptedAt != nil)
+        #expect(transport.transactions == Array(
+            repeating: WL5024Command.getWearDetection.transaction,
+            count: 1
+        ) + [
+            WL5024Command.getPreference(module: 1).transaction,
+            WL5024Command.getEnvironmentDetection.transaction,
+            WL5024Command.getMicrophoneNoiseCancellation.transaction,
+            WL5024Command.getPreference(module: 7).transaction,
+            WL5024Command.getBusyLight.transaction,
+            WL5024Command.getVoiceGuidance.transaction,
+            WL5024Command.getSmartSwitch.transaction,
+            WL5024Command.getMicFlipAction.transaction,
+            WL5024Command.getUCProfile.transaction,
+            WL5024Command.getUCAppStatus.transaction,
+            WL5024Command.getLEAudioFeatureMode.transaction,
+        ])
     }
 
-    @Test @MainActor func refreshPublishesOnlyMatchedDecodedValue() async throws {
-        let response = RaceFrame(
-            opcode: 0x2C83,
-            payload: Data([0x02, 0x00, 0x00])
-        ).encoded
-        let transport = FakeHeadsetTransport(responses: [.success(response)])
-        let controller = LiveHeadsetController(transport: transport)
-        await controller.start()
-
-        let snapshot = try await controller.refresh()
-
-        #expect(snapshot.values[.automaticMedia] == .boolean(false))
-        #expect(snapshot.confidence(for: .automaticMedia) == .deviceConfirmed)
-        #expect(snapshot.readiness(for: .automaticMedia) == .readOnly)
-        #expect(transport.transactions == [WL5024Command.getAutomaticMedia.transaction])
-    }
-
-    @Test @MainActor func malformedRefreshDoesNotMarkDataFresh() async {
-        let transport = FakeHeadsetTransport(responses: [.success(Data([0x00, 0x05]))])
-        let controller = LiveHeadsetController(transport: transport)
-        await controller.start()
-
-        await #expect(throws: HeadsetError.malformedResponse) {
-            try await controller.refresh()
-        }
-        #expect(controller.currentSnapshot.lastUpdated == nil)
-        #expect(controller.currentSnapshot.values[.automaticMedia] == nil)
-    }
-
-    @Test @MainActor func cancelledRefreshDoesNotMarkDataFresh() async {
+    @Test @MainActor func cancellationStopsRefreshImmediately() async {
         let transport = FakeHeadsetTransport(responses: [.failure(CancellationError())])
         let controller = LiveHeadsetController(transport: transport)
-        await controller.start()
+        _ = await controller.start()
 
-        await #expect(throws: CancellationError.self) {
-            try await controller.refresh()
-        }
+        await #expect(throws: CancellationError.self) { try await controller.refresh() }
+        #expect(transport.transactions == [WL5024Command.getWearDetection.transaction])
         #expect(controller.currentSnapshot.lastUpdated == nil)
-        #expect(controller.currentSnapshot.values[.automaticMedia] == nil)
     }
 
-    @Test @MainActor func qualifiedWritePublishesOnlyAfterAcknowledgementAndReadback() async throws {
-        let acknowledgement = RaceFrame(
-            opcode: 0x2C82,
-            payload: Data([0x02, 0x00, 0x00])
-        ).encoded
-        let readback = RaceFrame(
-            opcode: 0x2C83,
-            payload: Data([0x02, 0x00, 0x00])
-        ).encoded
-        let transport = FakeHeadsetTransport(responses: [.success(acknowledgement), .success(readback)])
-        let controller = LiveHeadsetController(
-            transport: transport,
-            qualifiedWrites: [.automaticMedia]
+    @Test @MainActor func refreshDecodesRecoveredCompositeSettings() async throws {
+        let response = wearResponse(flags: 0x0067)
+        let transport = FakeHeadsetTransport(
+            responses: Array(repeating: .success(response), count: ShippingWriteQualifications.orderedKeys.count)
         )
-        await controller.start()
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
 
-        let snapshot = try await controller.set(.automaticMedia, value: .boolean(false))
+        let snapshot = (try await controller.refresh()).snapshot
+        #expect(snapshot.values[.wearDetection] == .boolean(true))
+        #expect(snapshot.values[.automaticMedia] == .boolean(true))
+        #expect(snapshot.values[.muteMicrophoneOnRemoval] == .boolean(true))
+        #expect(snapshot.values[.quickPause] == .boolean(true))
+        #expect(snapshot.values[.quickPauseSensitivity] == .choice("sensitive"))
+        #expect(snapshot.values[.answerCallsOnWear] == .boolean(true))
+        #expect(snapshot.confidence(for: .automaticMedia) == .deviceConfirmed)
+        #expect(snapshot.readiness(for: .automaticMedia) == .experimental)
+        #expect(snapshot.lastUpdated != nil)
+    }
 
+    @Test @MainActor func qualifiedWriteReadsCurrentFlagsThenAcknowledgesAndReadsBack() async throws {
+        let current = wearResponse(flags: 0x0067)
+        let acknowledgement = wearAcknowledgement(status: 0)
+        let readback = wearResponse(flags: 0x0065)
+        let transport = FakeHeadsetTransport(responses: [
+            .success(current), .success(acknowledgement), .success(readback),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        let snapshot = (try await controller.set(.automaticMedia, value: .boolean(false))).snapshot
         #expect(snapshot.values[.automaticMedia] == .boolean(false))
         #expect(transport.transactions == [
-            WL5024Command.setAutomaticMedia(false).transaction,
-            WL5024Command.getAutomaticMedia.transaction,
+            WL5024Command.getWearDetection.transaction,
+            WL5024Command.setWearDetection(0x0065).transaction,
+            WL5024Command.getWearDetection.transaction,
         ])
     }
 
     @Test @MainActor func readbackMismatchDoesNotPublishRequestedValue() async {
-        let acknowledgement = RaceFrame(
-            opcode: 0x2C82,
-            payload: Data([0x02, 0x00, 0x00])
-        ).encoded
-        let mismatchedReadback = RaceFrame(
-            opcode: 0x2C83,
-            payload: Data([0x02, 0x00, 0x01])
-        ).encoded
-        let transport = FakeHeadsetTransport(
-            responses: [.success(acknowledgement), .success(mismatchedReadback)]
-        )
-        let controller = LiveHeadsetController(
-            transport: transport,
-            qualifiedWrites: [.automaticMedia]
-        )
-        await controller.start()
+        let transport = FakeHeadsetTransport(responses: [
+            .success(wearResponse(flags: 0x0067)),
+            .success(wearAcknowledgement(status: 0)),
+            .success(wearResponse(flags: 0x0067)),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
 
         await #expect(throws: HeadsetError.readbackMismatch(.automaticMedia)) {
             try await controller.set(.automaticMedia, value: .boolean(false))
         }
         #expect(controller.currentSnapshot.values[.automaticMedia] == nil)
         #expect(controller.currentSnapshot.lastUpdated == nil)
+    }
+
+    @Test @MainActor func invalidAcknowledgementStopsBeforeReadback() async {
+        let transport = FakeHeadsetTransport(responses: [
+            .success(wearResponse(flags: 0x0067)),
+            .success(wearAcknowledgement(status: 1)),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        await #expect(throws: HeadsetError.malformedResponse) {
+            try await controller.set(.automaticMedia, value: .boolean(false))
+        }
+        #expect(transport.transactions.count == 2)
+        #expect(controller.currentSnapshot.values[.automaticMedia] == nil)
+    }
+
+    @Test func shippingRegistryContainsOnlyCompleteRecoveredBluetoothContracts() {
+        #expect(ShippingWriteQualifications.orderedKeys == CapabilityCatalog.experimentalSettings)
+        #expect(Set(ShippingWriteQualifications.all.keys) == Set(CapabilityCatalog.experimentalSettings))
+        #expect(ShippingSettingReads.orderedKeys == CapabilityCatalog.interactiveSettings)
+        #expect(Set(ShippingSettingReads.all.keys) == Set(CapabilityCatalog.interactiveSettings))
+        for key in [
+            HeadsetSettingKey.wearDetection,
+            .automaticMedia,
+            .muteMicrophoneOnRemoval,
+            .quickPause,
+            .quickPauseSensitivity,
+            .answerCallsOnWear,
+        ] {
+            let qualification = ShippingWriteQualifications.all[key]
+            #expect(qualification?.preparationTransactions == [WL5024Command.getWearDetection.transaction])
+            #expect(qualification?.readBackTransactions == [WL5024Command.getWearDetection.transaction])
+            #expect(qualification?.provenance.captureIdentifier == "dell-ddpm-2.3.0.9-static-2026-09-01")
+        }
+        #expect(ShippingWriteQualifications.all[.sidetone]?.readBackTransactions == [
+            WL5024Command.getPreference(module: 7).transaction,
+            WL5024Command.getPreference(module: 6).transaction,
+        ])
+        #expect(ShippingWriteQualifications.all[.advancedPassthrough] == nil)
+        #expect(ShippingWriteQualifications.all[.autoPowerOff] == nil)
+        #expect(ShippingWriteQualifications.all[.incomingAudioNoiseCancellation] == nil)
+        #expect(ShippingWriteQualifications.all[.voicePrompts] == nil)
+        #expect(ShippingWriteQualifications.all[.voiceGuidance]?.readBackTransactions == [
+            WL5024Command.getVoiceGuidance.transaction,
+        ])
+    }
+
+    @Test func automaticMediaContractPreservesAdjacentFlags() throws {
+        let qualification = try #require(ShippingWriteQualifications.all[.automaticMedia])
+        let transactions = try qualification.writeTransactions(
+            for: .boolean(false),
+            preparationResponses: [wearResponse(flags: 0xA567)]
+        )
+        #expect(transactions == [WL5024Command.setWearDetection(0xA565).transaction])
+        #expect(try qualification.readBackDecoder([wearResponse(flags: 0xA565)]) == .boolean(false))
+    }
+
+    @Test func sidetoneContractWritesStateThenLevelAndReadsBoth() throws {
+        let qualification = try #require(ShippingWriteQualifications.all[.sidetone])
+        #expect(try qualification.writeTransactions(for: .choice("off")) == [
+            WL5024Command.setPreferenceByte(module: 7, value: 0).transaction,
+        ])
+        #expect(try qualification.writeTransactions(for: .choice("5")) == [
+            WL5024Command.setPreferenceByte(module: 7, value: 1).transaction,
+            WL5024Command.setPreferenceUInt16(module: 6, value: 5).transaction,
+        ])
+        #expect(try qualification.readBackDecoder([
+            preferenceResponse(module: 7, value: [0]),
+            preferenceResponse(module: 6, value: [5, 0]),
+        ]) == .choice("off"))
+        #expect(try qualification.readBackDecoder([
+            preferenceResponse(module: 7, value: [1]),
+            preferenceResponse(module: 6, value: [5, 0]),
+        ]) == .choice("5"))
+    }
+
+    @Test func automaticPowerOffCaptureIsReadOnlyAndDecodesBothProfiles() throws {
+        let definition = try #require(ShippingSettingReads.all[.autoPowerOff])
+        #expect(try definition.decoder([
+            preferenceResponse(module: 1, value: [1, 0, 0x08, 0x07, 0, 0, 0x08, 0x07]),
+        ]) == .choice("30m"))
+        #expect(ShippingWriteQualifications.all[.autoPowerOff] == nil)
+    }
+
+    @Test @MainActor func refreshDecodesBuildNineCaptureAndGatesUnqualifiedWrites() async throws {
+        let transport = FakeHeadsetTransport(responses: [
+            .success(wearResponse(flags: 0x000F)),
+            .success(preferenceResponse(module: 1, value: [1, 0, 0x08, 0x07, 0, 0, 0x08, 0x07])),
+            .success(environmentDetectionResponse(false)),
+            .success(booleanResponse(opcode: 0x0EFF, value: true)),
+            .success(preferenceResponse(module: 7, value: [1])),
+            .success(preferenceResponse(module: 6, value: [3, 0])),
+            .success(booleanResponse(opcode: 0x0023, value: true)),
+            .success(booleanResponse(opcode: 0x0025, value: true)),
+            .success(smartSwitchResponse(false)),
+            .success(statusByteResponse(opcode: 0x0029, value: 3)),
+            .success(statusByteResponse(opcode: 0x0041, value: 0)),
+            .success(statusByteResponse(opcode: 0x0042, value: 0)),
+            .success(preferenceResponse(module: 0x0031, value: [1, 2, 2, 0])),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        let snapshot = (try await controller.refresh()).snapshot
+        #expect(snapshot.values[.autoPowerOff] == .choice("30m"))
+        #expect(snapshot.readiness(for: .autoPowerOff) == .readOnly)
+        #expect(snapshot.values[.environmentDetection] == .boolean(false))
+        #expect(snapshot.readiness(for: .environmentDetection) == .readOnly)
+        #expect(snapshot.values[.sidetone] == .choice("3"))
+        #expect(snapshot.values[.microphoneNoiseCancellation] == .boolean(true))
+        #expect(snapshot.readiness(for: .microphoneNoiseCancellation) == .experimental)
+        #expect(snapshot.values[.smartSwitch] == .boolean(false))
+        #expect(snapshot.readiness(for: .smartSwitch) == .readOnly)
+        #expect(snapshot.values[.micFlipAction] == .integer(3))
+        #expect(snapshot.values[.ucProfile] == .integer(0))
+        #expect(snapshot.values[.ucAppStatus] == .integer(0))
+        #expect(snapshot.values[.leAudioFeatureMode] == .integer(2))
+        #expect(snapshot.readiness(for: .leAudioFeatureMode) == .readOnly)
+        #expect(snapshot.readiness(for: .advancedPassthrough) == .validationPending)
+        #expect(snapshot.readiness(for: .incomingAudioNoiseCancellation) == .validationPending)
+        await #expect(throws: HeadsetError.unsupported(.autoPowerOff)) {
+            try await controller.set(.autoPowerOff, value: .choice("30m"))
+        }
+        #expect(transport.transactions.count == 13)
+    }
+
+    @Test @MainActor func sidetoneWriteValidatesBothAcknowledgementsAndBothReadbacks() async throws {
+        let transport = FakeHeadsetTransport(responses: [
+            .success(preferenceAcknowledgement(module: 7)),
+            .success(preferenceAcknowledgement(module: 6)),
+            .success(preferenceResponse(module: 7, value: [1])),
+            .success(preferenceResponse(module: 6, value: [5, 0])),
+        ])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+
+        let update = try await controller.set(.sidetone, value: .choice("5"))
+        #expect(update.snapshot.values[.sidetone] == .choice("5"))
+        #expect(transport.transactions == [
+            WL5024Command.setPreferenceByte(module: 7, value: 1).transaction,
+            WL5024Command.setPreferenceUInt16(module: 6, value: 5).transaction,
+            WL5024Command.getPreference(module: 7).transaction,
+            WL5024Command.getPreference(module: 6).transaction,
+        ])
+    }
+
+    @Test @MainActor func readOnlyDiscoveryDecodesCompositeAndSmartSwitchGetters() async throws {
+        let responses: [Result<Data, any Error>] = (0...265).map { index in
+            switch index {
+            case 256: .success(wearResponse(flags: 0x0067))
+            case 262: .success(smartSwitchResponse(false))
+            default: .failure(HeadsetError.timeout)
+            }
+        }
+        let transport = FakeHeadsetTransport(responses: responses)
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+        var finalProgress: ReadOnlyDiscoveryProgress?
+
+        let result = try await controller.discoverReadOnly { finalProgress = $0 }
+        #expect(transport.transactions == ReadOnlyDiscoveryPlan.probes.map(\.transaction))
+        #expect(result.summary.queryCount == 266)
+        #expect(result.summary.responseCount == 2)
+        #expect(result.summary.timeoutCount == 264)
+        #expect(result.summary.decodedSettingCount == 7)
+        #expect(result.update.snapshot.values[.automaticMedia] == .boolean(true))
+        #expect(result.update.snapshot.values[.smartSwitch] == .boolean(false))
+        #expect(finalProgress?.completed == 266)
+    }
+
+    @Test @MainActor func readOnlyDiscoveryPropagatesCancellationBeforeSecondQuery() async {
+        let transport = FakeHeadsetTransport(responses: [.failure(CancellationError())])
+        let controller = LiveHeadsetController(transport: transport)
+        _ = await controller.start()
+        await #expect(throws: CancellationError.self) {
+            try await controller.discoverReadOnly { _ in }
+        }
+        #expect(transport.transactions.count == 1)
     }
 }
 
@@ -151,13 +312,11 @@ private final class FakeHeadsetTransport: HeadsetTransporting {
     private var responses: [Result<Data, any Error>]
     private var updateHandler: (@Sendable (TransportUpdate) -> Void)?
 
-    init(responses: [Result<Data, any Error>]) {
-        self.responses = responses
-    }
+    init(responses: [Result<Data, any Error>]) { self.responses = responses }
 
     func start(updateHandler: @escaping @Sendable (TransportUpdate) -> Void) {
         self.updateHandler = updateHandler
-        updateHandler(.connectedBluetooth(name: "Test WL5024"))
+        updateHandler(.connectedBluetooth(name: "Test WL5024", identifier: UUID()))
     }
 
     func stop() {
@@ -165,12 +324,77 @@ private final class FakeHeadsetTransport: HeadsetTransporting {
         updateHandler = nil
     }
 
-    func transact(
-        _ transaction: TransportTransaction,
-        timeout: Duration
-    ) async throws -> Data {
+    func transact(_ transaction: TransportTransaction, timeout: Duration) async throws -> Data {
         transactions.append(transaction)
         guard !responses.isEmpty else { throw HeadsetError.timeout }
         return try responses.removeFirst().get()
     }
+}
+
+private func wearResponse(flags: UInt16) -> Data {
+    RaceFrame(
+        packetType: .response,
+        opcode: 0x0021,
+        payload: Data([0, UInt8(truncatingIfNeeded: flags), UInt8(truncatingIfNeeded: flags >> 8)])
+    ).encoded
+}
+
+private func wearAcknowledgement(status: UInt8) -> Data {
+    RaceFrame(packetType: .response, opcode: 0x0020, payload: Data([status])).encoded
+}
+
+private func preferenceResponse(module: UInt16, value: [UInt8]) -> Data {
+    RaceFrame(
+        packetType: .response,
+        opcode: 0x2C83,
+        payload: Data([
+            0,
+            UInt8(truncatingIfNeeded: module),
+            UInt8(truncatingIfNeeded: module >> 8),
+        ] + value)
+    ).encoded
+}
+
+private func preferenceAcknowledgement(module: UInt16) -> Data {
+    RaceFrame(
+        packetType: .response,
+        opcode: 0x2C82,
+        payload: Data([
+            0,
+            UInt8(truncatingIfNeeded: module),
+            UInt8(truncatingIfNeeded: module >> 8),
+        ])
+    ).encoded
+}
+
+private func booleanResponse(opcode: UInt16, value: Bool) -> Data {
+    RaceFrame(
+        packetType: .response,
+        opcode: opcode,
+        payload: Data([0, value ? 1 : 0])
+    ).encoded
+}
+
+private func statusByteResponse(opcode: UInt16, value: UInt8) -> Data {
+    RaceFrame(
+        packetType: .response,
+        opcode: opcode,
+        payload: Data([0, value])
+    ).encoded
+}
+
+private func smartSwitchResponse(_ value: Bool) -> Data {
+    RaceFrame(
+        packetType: .response,
+        opcode: 0x0901,
+        payload: Data([0x06, 0x00, 0x00, value ? 1 : 0])
+    ).encoded
+}
+
+private func environmentDetectionResponse(_ value: Bool) -> Data {
+    RaceFrame(
+        packetType: .response,
+        opcode: 0x0E17,
+        payload: Data([0x03, 0x03, value ? 1 : 0])
+    ).encoded
 }

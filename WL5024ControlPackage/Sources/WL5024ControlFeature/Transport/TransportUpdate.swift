@@ -2,9 +2,9 @@ import Foundation
 
 public enum TransportUpdate: Sendable, Equatable {
     case searching(TransportKind)
-    case connectedBluetooth(name: String)
+    case connectedBluetooth(name: String, identifier: UUID)
     case receiverFound(HIDDeviceSummary)
-    case bluetoothDisconnected
+    case bluetoothDisconnected(identifier: UUID)
     case receiverRemoved
     case bluetoothPermissionDenied
     case bluetoothUnavailable

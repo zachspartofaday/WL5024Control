@@ -19,10 +19,16 @@ struct CapabilityCatalogTests {
 
     @Test @MainActor func mockControllerCanSetEveryNonActionCapability() async throws {
         let controller = MockHeadsetController()
-        await controller.start()
-        for key in HeadsetSettingKey.allCases where key.controlKind != .action {
-            let snapshot = try await controller.set(key, value: key.defaultValue)
-            #expect(snapshot.values[key] == key.defaultValue)
+        _ = await controller.start()
+        for key in HeadsetSettingKey.allCases
+        where key.controlKind != .action && key.controlKind != .readOnlyValue {
+            let update = try await controller.set(key, value: key.defaultValue)
+            #expect(update.snapshot.values[key] == key.defaultValue)
+        }
+        for key in HeadsetSettingKey.allCases where key.controlKind == .readOnlyValue {
+            await #expect(throws: HeadsetError.invalidValue(key)) {
+                try await controller.set(key, value: key.defaultValue)
+            }
         }
         _ = try await controller.perform(.findMyHeadset)
     }

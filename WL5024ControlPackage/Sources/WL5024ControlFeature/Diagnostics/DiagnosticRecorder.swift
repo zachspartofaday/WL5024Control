@@ -72,20 +72,20 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
 public final class DiagnosticRecorder {
     public static let shared = DiagnosticRecorder()
 
-    public private(set) var entries: [DiagnosticEntry] = []
-    private let maximumEntries = 5_000
+    private var buffer: FixedCapacityRingBuffer<DiagnosticEntry>
 
-    private init() {}
+    public var entries: [DiagnosticEntry] { buffer.elements }
+
+    init(maximumEntries: Int = 5_000) {
+        buffer = FixedCapacityRingBuffer(capacity: maximumEntries)
+    }
 
     public func record(
         _ category: String,
         _ message: String,
         details: [String: String] = [:]
     ) {
-        entries.append(DiagnosticEntry(category: category, message: message, details: details))
-        if entries.count > maximumEntries {
-            entries.removeFirst(entries.count - maximumEntries)
-        }
+        buffer.append(DiagnosticEntry(category: category, message: message, details: details))
     }
 
     public func report(snapshot: HeadsetSnapshot) -> DiagnosticReport {

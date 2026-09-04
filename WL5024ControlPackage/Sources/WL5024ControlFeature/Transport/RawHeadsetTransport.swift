@@ -4,6 +4,7 @@ import Foundation
 protocol RawHeadsetTransport: AnyObject {
     var kind: TransportKind { get }
     var isReady: Bool { get }
+    func configure(updateHandler: @escaping @Sendable (TransportUpdate) -> Void)
     func start()
     func stop()
     func transact(_ transaction: TransportTransaction, timeout: Duration) async throws -> Data
