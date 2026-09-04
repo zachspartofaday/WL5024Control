@@ -28,6 +28,10 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
     case touchControls
     case gestureControls
     case smartSwitch
+    case micFlipAction
+    case ucProfile
+    case ucAppStatus
+    case leAudioFeatureMode
     case multiAssistant
     case findMyHeadset
     case gameChatBalance
@@ -50,7 +54,8 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
              .maximumVolume, .gameChatBalance, .gameChatMix, .gameMicrophoneVolume:
             .sound
         case .voiceGuidance, .voicePrompts, .deviceName, .touchControls,
-             .gestureControls, .smartSwitch, .multiAssistant, .findMyHeadset:
+             .gestureControls, .smartSwitch, .micFlipAction, .ucProfile,
+             .ucAppStatus, .leAudioFeatureMode, .multiAssistant, .findMyHeadset:
             .device
         }
     }
@@ -84,6 +89,10 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
         case .touchControls: LocalizedStringResource("Touch controls", bundle: #bundle)
         case .gestureControls: LocalizedStringResource("Button and gesture controls", bundle: #bundle)
         case .smartSwitch: LocalizedStringResource("Smart Switch", bundle: #bundle)
+        case .micFlipAction: LocalizedStringResource("Microphone boom action", bundle: #bundle)
+        case .ucProfile: LocalizedStringResource("UC profile", bundle: #bundle)
+        case .ucAppStatus: LocalizedStringResource("UC app status", bundle: #bundle)
+        case .leAudioFeatureMode: LocalizedStringResource("LE Audio feature mode", bundle: #bundle)
         case .multiAssistant: LocalizedStringResource("Voice assistant", bundle: #bundle)
         case .findMyHeadset: LocalizedStringResource("Find My Headset", bundle: #bundle)
         case .gameChatBalance: LocalizedStringResource("Game and chat balance", bundle: #bundle)
@@ -112,6 +121,14 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
             LocalizedStringResource("Choose how long the idle headset waits before powering off.", bundle: #bundle)
         case .findMyHeadset:
             LocalizedStringResource("Play the headset's location sound.", bundle: #bundle)
+        case .micFlipAction:
+            LocalizedStringResource("Reports the action assigned to moving the microphone boom.", bundle: #bundle)
+        case .ucProfile:
+            LocalizedStringResource("Reports the headset's current unified-communications profile.", bundle: #bundle)
+        case .ucAppStatus:
+            LocalizedStringResource("Reports the current unified-communications application state.", bundle: #bundle)
+        case .leAudioFeatureMode:
+            LocalizedStringResource("Reports the LE Audio mode exposed by firmware 4.1.4.", bundle: #bundle)
         default:
             LocalizedStringResource("This preference is stored on the headset.", bundle: #bundle)
         }
@@ -120,7 +137,7 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
     public var controlKind: SettingControlKind {
         switch self {
         case .ancMode, .sidetone, .quickPauseSensitivity, .autoPowerOff,
-             .equalizerPreset, .voiceGuidance, .gestureControls, .multiAssistant:
+             .equalizerPreset, .gestureControls, .multiAssistant:
             .choices
         case .bass, .mid, .treble:
             .level(range: -6...6, step: 1)
@@ -130,6 +147,8 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
             .text
         case .findMyHeadset:
             .action
+        case .micFlipAction, .ucProfile, .ucAppStatus, .leAudioFeatureMode:
+            .readOnlyValue
         default:
             .toggle
         }
@@ -150,9 +169,12 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
         case .sidetone:
             [
                 SettingChoice(id: "off", title: LocalizedStringResource("Off", bundle: #bundle)),
-                SettingChoice(id: "1", title: LocalizedStringResource("Low", bundle: #bundle)),
-                SettingChoice(id: "2", title: LocalizedStringResource("Medium", bundle: #bundle)),
-                SettingChoice(id: "3", title: LocalizedStringResource("High", bundle: #bundle)),
+                SettingChoice(id: "0", title: LocalizedStringResource("Level 0", bundle: #bundle)),
+                SettingChoice(id: "1", title: LocalizedStringResource("Level 1", bundle: #bundle)),
+                SettingChoice(id: "2", title: LocalizedStringResource("Level 2", bundle: #bundle)),
+                SettingChoice(id: "3", title: LocalizedStringResource("Level 3", bundle: #bundle)),
+                SettingChoice(id: "4", title: LocalizedStringResource("Level 4", bundle: #bundle)),
+                SettingChoice(id: "5", title: LocalizedStringResource("Level 5", bundle: #bundle)),
             ]
         case .quickPauseSensitivity:
             [
@@ -207,7 +229,7 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
         case .quickPauseSensitivity: .choice("normal")
         case .autoPowerOff: .choice("2h")
         case .equalizerPreset: .choice("default")
-        case .voiceGuidance: .choice("essential")
+        case .voiceGuidance: .boolean(true)
         case .gestureControls: .choice("default")
         case .multiAssistant: .choice("system")
         case .bass, .mid, .treble: .integer(0)
@@ -215,6 +237,9 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
         case .maximumVolume, .gameMicrophoneVolume: .integer(100)
         case .deviceName: .text("Dell WL5024")
         case .findMyHeadset: .boolean(false)
+        case .micFlipAction: .integer(3)
+        case .ucProfile, .ucAppStatus: .integer(0)
+        case .leAudioFeatureMode: .integer(2)
         default: .boolean(true)
         }
     }

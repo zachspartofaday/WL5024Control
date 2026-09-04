@@ -4,12 +4,14 @@ public enum CommandQualification: String, Sendable, Codable {
     case staticallyRecovered
     case windowsPluginMapped
     case hardwareValidationPending
+    case hardwareReadValidated
 
     public var label: String {
         switch self {
         case .staticallyRecovered: "Recovered from firmware"
         case .windowsPluginMapped: "Mapped from Dell software"
         case .hardwareValidationPending: "Ready for device validation"
+        case .hardwareReadValidated: "Read validated; write pending"
         }
     }
 }
@@ -21,6 +23,7 @@ public enum CapabilityAccess: String, Sendable, Codable {
 
 public enum WireRecipe: Sendable, Equatable {
     case genericPreference(module: UInt16, scalar: ScalarEncoding)
+    case wearDetectionComposite
     case environmentDetection
     case smartSwitch
     case vendorFunction(String)
@@ -37,6 +40,8 @@ public enum WireRecipe: Sendable, Equatable {
         switch self {
         case .genericPreference(let module, let scalar):
             "RACE preference module \(module), \(scalar.rawValue)"
+        case .wearDetectionComposite:
+            "RACE get 0x0021 / set 0x0020, UInt16 bitmask"
         case .environmentDetection:
             "RACE opcode 0x0E17"
         case .smartSwitch:

@@ -6,4 +6,5 @@ public enum SettingControlKind: Sendable, Equatable {
     case level(range: ClosedRange<Int>, step: Int)
     case text
     case action
+    case readOnlyValue
 }

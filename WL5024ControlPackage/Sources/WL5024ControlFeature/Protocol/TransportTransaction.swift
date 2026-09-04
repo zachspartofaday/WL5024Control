@@ -1,6 +1,6 @@
 import Foundation
 
-public struct RaceResponseMatcher: Sendable, Equatable {
+public struct RaceResponseMatcher: Sendable, Hashable {
     public let opcode: UInt16
     public let module: UInt16?
 
@@ -10,13 +10,49 @@ public struct RaceResponseMatcher: Sendable, Equatable {
     }
 
     public func matches(_ data: Data) -> Bool {
-        guard let frame = try? RaceFrame(decoding: data), frame.opcode == opcode else {
+        guard let frame = try? RaceFrame(decoding: data),
+              frame.packetType == .response,
+              frame.opcode == opcode else {
             return false
         }
         guard let module else { return true }
-        guard frame.payload.count >= 2 else { return false }
-        let bytes = Array(frame.payload.prefix(2))
-        return UInt16(bytes[0]) | (UInt16(bytes[1]) << 8) == module
+        let bytes = Array(frame.payload)
+        if bytes.count >= 2,
+           UInt16(bytes[0]) | (UInt16(bytes[1]) << 8) == module {
+            return true
+        }
+        return bytes.count >= 3
+            && UInt16(bytes[1]) | (UInt16(bytes[2]) << 8) == module
+    }
+}
+
+/// Tracks response shapes from requests that ended without an attributable
+/// response. RACE packets carry no request identifier, so a matching late
+/// packet must be drained before an identical request can be issued safely.
+public struct RaceResponseQuarantine: Sendable {
+    private var matchers: Set<RaceResponseMatcher> = []
+
+    public init() {}
+
+    public func contains(_ matcher: RaceResponseMatcher) -> Bool {
+        matchers.contains(matcher)
+    }
+
+    public mutating func insert(_ matcher: RaceResponseMatcher) {
+        matchers.insert(matcher)
+    }
+
+    @discardableResult
+    public mutating func drain(matching data: Data) -> Bool {
+        guard let matcher = matchers.first(where: { $0.matches(data) }) else {
+            return false
+        }
+        matchers.remove(matcher)
+        return true
+    }
+
+    public mutating func removeAll() {
+        matchers.removeAll()
     }
 }
 
@@ -33,15 +69,15 @@ public struct TransportTransaction: Sendable, Equatable {
 extension WL5024Command {
     public var transaction: TransportTransaction {
         switch self {
-        case .getAutomaticMedia:
+        case .getWearDetection:
             TransportTransaction(
                 request: frame.encoded,
-                expectedResponse: RaceResponseMatcher(opcode: 0x2C83, module: 2)
+                expectedResponse: RaceResponseMatcher(opcode: 0x0021)
             )
-        case .setAutomaticMedia:
+        case .setWearDetection:
             TransportTransaction(
                 request: frame.encoded,
-                expectedResponse: RaceResponseMatcher(opcode: 0x2C82, module: 2)
+                expectedResponse: RaceResponseMatcher(opcode: 0x0020)
             )
         case .getPreference(let module):
             TransportTransaction(
@@ -53,6 +89,27 @@ extension WL5024Command {
                 request: frame.encoded,
                 expectedResponse: RaceResponseMatcher(opcode: 0x2C82, module: module)
             )
+        case .setAutoPowerOff:
+            TransportTransaction(
+                request: frame.encoded,
+                expectedResponse: RaceResponseMatcher(opcode: 0x2C82, module: 1)
+            )
+        case .getBusyLight:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0023))
+        case .setBusyLight:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0022))
+        case .getVoiceGuidance:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0025))
+        case .setVoiceGuidance:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0024))
+        case .getIncomingAudioNoiseCancellation:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0044))
+        case .setIncomingAudioNoiseCancellation:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0043))
+        case .getMicrophoneNoiseCancellation:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0EFF))
+        case .setMicrophoneNoiseCancellation:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0E0D))
         case .getEnvironmentDetection, .setEnvironmentDetection:
             TransportTransaction(
                 request: frame.encoded,
@@ -61,12 +118,23 @@ extension WL5024Command {
         case .getSmartSwitch:
             TransportTransaction(
                 request: frame.encoded,
-                expectedResponse: RaceResponseMatcher(opcode: 0x0901)
+                expectedResponse: RaceResponseMatcher(opcode: 0x0901, module: 6)
             )
         case .setSmartSwitch:
             TransportTransaction(
                 request: frame.encoded,
                 expectedResponse: RaceResponseMatcher(opcode: 0x1101)
+            )
+        case .getMicFlipAction:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0029))
+        case .getUCProfile:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0041))
+        case .getUCAppStatus:
+            TransportTransaction(request: frame.encoded, expectedResponse: .init(opcode: 0x0042))
+        case .getLEAudioFeatureMode:
+            TransportTransaction(
+                request: frame.encoded,
+                expectedResponse: RaceResponseMatcher(opcode: 0x2C83, module: 0x0031)
             )
         }
     }

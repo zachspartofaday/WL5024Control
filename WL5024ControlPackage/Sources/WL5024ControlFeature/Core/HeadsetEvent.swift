@@ -1,6 +1,6 @@
 import Foundation
 
 public enum HeadsetEvent: Sendable, Equatable {
-    case snapshot(HeadsetSnapshot)
+    case snapshot(HeadsetStateUpdate)
     case error(HeadsetError)
 }

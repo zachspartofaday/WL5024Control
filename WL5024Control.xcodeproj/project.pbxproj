@@ -30,9 +30,17 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Debug.xcconfig,
+				DeveloperIDUploadOptions.plist,
 				Release.xcconfig,
 				Shared.xcconfig,
 				Tests.xcconfig,
+			);
+			target = 8BC2655B2DEDD3F400F279A4 /* WL5024Control */;
+		};
+		8BD71C1F2DEE424400CEDD92 /* Exceptions for "WL5024Control" folder in "WL5024Control" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				WL5024Control.xctestplan,
 			);
 			target = 8BC2655B2DEDD3F400F279A4 /* WL5024Control */;
 		};
@@ -49,6 +57,9 @@
 		};
 		8BC2655E2DEDD3F400F279A4 /* WL5024Control */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8BD71C1F2DEE424400CEDD92 /* Exceptions for "WL5024Control" folder in "WL5024Control" target */,
+			);
 			path = WL5024Control;
 			sourceTree = "<group>";
 		};

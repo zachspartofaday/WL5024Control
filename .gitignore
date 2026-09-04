@@ -67,3 +67,4 @@ fastlane/test_output
 *.wl5024log.json
 WL5024-diagnostics*.json
 Artifacts/
+dist/

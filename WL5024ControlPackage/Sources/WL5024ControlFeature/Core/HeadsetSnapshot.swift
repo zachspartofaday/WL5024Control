@@ -9,6 +9,10 @@ public struct HeadsetSnapshot: Sendable, Equatable {
         public var isCharging: Bool
         public var transport: TransportKind?
         public var receiverDetected: Bool
+        /// Identity of the Bluetooth peripheral that produced the current
+        /// live values. Cleared on disconnect/stop; values are invalidated
+        /// whenever the session ends or changes (AUD-001).
+        public var bluetoothSessionId: UUID?
 
         public init(
             model: String = "Dell WL5024",
@@ -17,7 +21,8 @@ public struct HeadsetSnapshot: Sendable, Equatable {
             batteryPercent: Int? = nil,
             isCharging: Bool = false,
             transport: TransportKind? = nil,
-            receiverDetected: Bool = false
+            receiverDetected: Bool = false,
+            bluetoothSessionId: UUID? = nil
         ) {
             self.model = model
             self.headsetFirmware = headsetFirmware
@@ -26,6 +31,7 @@ public struct HeadsetSnapshot: Sendable, Equatable {
             self.isCharging = isCharging
             self.transport = transport
             self.receiverDetected = receiverDetected
+            self.bluetoothSessionId = bluetoothSessionId
         }
     }
 
@@ -75,7 +81,9 @@ public struct HeadsetSnapshot: Sendable, Equatable {
             ),
             capabilities: capabilities,
             values: values,
-            readiness: Dictionary(uniqueKeysWithValues: capabilities.map { ($0, .ready) }),
+            readiness: Dictionary(uniqueKeysWithValues: capabilities.map {
+                ($0, $0.controlKind == .readOnlyValue ? .readOnly : .ready)
+            }),
             valueConfidence: Dictionary(uniqueKeysWithValues: capabilities.map { ($0, .simulated) }),
             lastUpdated: .now
         )
