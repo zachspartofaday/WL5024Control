@@ -29,6 +29,10 @@ On a Mac with the headset paired and its USB receiver connected, open **Diagnost
 
 Files matching `*.wl5024log.json` and the local `Artifacts` directory are ignored by Git and must not be committed. Send the exported log separately for protocol analysis.
 
+Diagnostic JSON format version 2 retains the most recent 5,000 events. Its `retention` object reports capacity, retained and total recorded counts, dropped count, and the oldest/newest retained timestamps (omitted for an empty capture). Counts cover the recorder's lifetime, including reconnects. The separate `inventory` object contains the current Bluetooth connection and receiver interfaces even when their original discovery events have rolled out of the buffer. Disconnect, removal, and stop clear the corresponding inventory. A nonzero dropped count means the event history is incomplete; consumers should check `formatVersion` before interpreting the report.
+
+If Bluetooth permission is denied, choose **Open Bluetooth Privacy Settings**. The destination is **System Settings → Privacy & Security → Bluetooth**; follow that path manually if macOS does not open the pane directly. Allow the app there, then return and reconnect.
+
 For a Bluetooth-only capture, keep **Dell WL5024 Headset** connected in macOS Settings before launching the app and approve Bluetooth access when prompted. Once the app says Bluetooth is connected, choose **Refresh** to read the current state for every visible setting. Refresh deduplicates both successful and failed shared transactions; it sends at most thirteen distinct reads and can take at most roughly 39 seconds if each family is silent. For broader inventory, run the bounded 266-query Diagnostics discovery and leave the app open until it completes (up to roughly four minutes when most modules are silent). Change only values you intend to test, then export even if a command reports a timeout—the connection state, exact requests, GATT delivery acknowledgements, acknowledgements, read-backs, and unsolicited notifications are the evidence needed to validate the hardware path.
 
 The package also contains a command-line inspection tool:
@@ -43,6 +47,10 @@ swift run WL5024Probe --usb --module=49
 ```
 
 The `--live` path connects straight to the recovered CoreBluetooth service and prints each request, GATT acknowledgement, notification, match, and timeout. It is restricted to an explicit read-only getter list. The `--usb` path matches only the direct headset's Dell `413C:A520` vendor interface and sends one generic preference getter using the physically validated `06`/`07` HID wrapper. The `firmware-v4.*` probes are packet contracts recovered from Dell's August 2026 Windows SDK; the four physically validated values also appear read-only in the normal app surface.
+
+Probe exit codes are `0` for success, `64` for invalid arguments, and `74` for setup, I/O, response, or timeout failure. A completed Bluetooth query collection with any missing response exits `74`, preserving all partial results and the final response/timeout counts. Automation must check the exit code even when a log was produced.
+
+Live refreshes, writes, and discovery are bound to the connection in which they began. A disconnect, Bluetooth reset or permission loss, stop, or replacement connection aborts that work. Reconnecting to the same device also starts a new session; an old command cannot resume its writes or update the new session's values. Every writable live control remains explicitly experimental, including the menu-bar toggle after its current value becomes known.
 
 ## Visible setting surface
 

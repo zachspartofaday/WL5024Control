@@ -32,6 +32,10 @@ let package = Package(
             linkerSettings: [.linkedFramework("IOKit")]
         ),
         .testTarget(
+            name: "WL5024ProbeTests",
+            dependencies: ["WL5024Probe"]
+        ),
+        .testTarget(
             name: "WL5024ControlFeatureTests",
             dependencies: [
                 "WL5024ControlFeature"

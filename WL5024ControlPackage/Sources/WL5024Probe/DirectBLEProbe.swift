@@ -407,9 +407,11 @@ private extension DirectBLEProbe {
         }
 
         private func succeed() {
-            exitCode = ProbeExitStatus.success
+            exitCode = ProbeExitStatus.completedQueries(
+                requests: probes.count, responses: responseCount, timeouts: timeoutCount
+            )
             finish(
-                status: "DONE",
+                status: exitCode == ProbeExitStatus.success ? "DONE" : "TIMEOUT",
                 message: "requests=\(probes.count) responses=\(responseCount) "
                     + "timeouts=\(timeoutCount) unsolicited=\(unsolicitedCount) ambiguous=\(ambiguousCount)"
             )

@@ -12,6 +12,9 @@ public final class LiveHeadsetController: HeadsetController {
     private let stream: AsyncStream<HeadsetEvent>
     private let continuation: AsyncStream<HeadsetEvent>.Continuation
     private var revision: UInt64 = 0
+    // A peripheral UUID identifies a device, not a connection. Every ready
+    // event starts a new generation, including reconnections to the same device.
+    private var connectionGeneration: UInt64 = 0
     private static let readableKeys = ShippingSettingReads.orderedKeys
 
     var currentSnapshot: HeadsetSnapshot { snapshot }
@@ -56,6 +59,7 @@ public final class LiveHeadsetController: HeadsetController {
     }
 
     public func stop() async -> HeadsetStateUpdate {
+        connectionGeneration &+= 1
         transport.stop()
         snapshot.connection = .idle
         snapshot.device.transport = nil
@@ -73,9 +77,8 @@ public final class LiveHeadsetController: HeadsetController {
     }
 
     public func refresh() async throws -> HeadsetStateUpdate {
-        guard case .connected = snapshot.connection else {
-            throw HeadsetError.disconnected
-        }
+        let session = connectionGeneration
+        try requireSession(session)
 
         snapshot.lastAttemptedAt = .now
         _ = publish()
@@ -96,7 +99,7 @@ public final class LiveHeadsetController: HeadsetController {
                         responses.append(try cached.get())
                     } else {
                         do {
-                            let response = try await transport.transact(transaction, timeout: .seconds(3))
+                            let response = try await transact(transaction, session: session)
                             responseCache[transaction.request] = .success(response)
                             responses.append(response)
                         } catch is CancellationError {
@@ -114,6 +117,7 @@ public final class LiveHeadsetController: HeadsetController {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                try requireSession(session)
                 firstError = firstError ?? error
                 failedKeys.insert(key)
                 DiagnosticRecorder.shared.record(
@@ -127,6 +131,7 @@ public final class LiveHeadsetController: HeadsetController {
             }
         }
 
+        try requireSession(session)
         // Drop stale state for keys that failed so a partial refresh never
         // presents old values as freshly confirmed.
         for key in failedKeys {
@@ -160,9 +165,8 @@ public final class LiveHeadsetController: HeadsetController {
         _ key: HeadsetSettingKey,
         value: SettingValue
     ) async throws -> HeadsetStateUpdate {
-        guard case .connected = snapshot.connection else {
-            throw HeadsetError.disconnected
-        }
+        let session = connectionGeneration
+        try requireSession(session)
         guard snapshot.readiness(for: key).allowsWrite else {
             throw HeadsetError.unsupported(key)
         }
@@ -176,7 +180,7 @@ public final class LiveHeadsetController: HeadsetController {
         for preparation in qualification.preparationTransactions {
             try Task.checkCancellation()
             preparationResponses.append(
-                try await transport.transact(preparation, timeout: .seconds(3))
+                try await transact(preparation, session: session)
             )
         }
         if ShippingWriteQualifications.wearKeys.contains(key),
@@ -197,9 +201,10 @@ public final class LiveHeadsetController: HeadsetController {
         for (index, writeTransaction) in writeTransactions.enumerated() {
             do {
                 try Task.checkCancellation()
-                let acknowledgement = try await transport.transactWrite(writeTransaction, timeout: .seconds(3))
+                let acknowledgement = try await transact(writeTransaction, session: session, isWrite: true)
                 try qualification.acknowledgementValidator(index, acknowledgement)
             } catch let error as DispatchedTransactionError {
+                try requireSession(session)
                 if error.isCancellation {
                     invalidateCancelledWrite(
                         key: key,
@@ -209,6 +214,7 @@ public final class LiveHeadsetController: HeadsetController {
                     throw CancellationError()
                 }
                 throw await writeRecoveryError(
+                    session: session,
                     key: key,
                     qualification: qualification,
                     step: index,
@@ -216,6 +222,7 @@ public final class LiveHeadsetController: HeadsetController {
                     underlying: error
                 )
             } catch is CancellationError {
+                try requireSession(session)
                 // Cancellation before step zero is safe. Between later steps,
                 // at least one write was already acknowledged, and the
                 // cancelled task cannot perform a reliable read-back.
@@ -228,10 +235,12 @@ public final class LiveHeadsetController: HeadsetController {
                 }
                 throw CancellationError()
             } catch HeadsetError.malformedResponse {
+                try requireSession(session)
                 // The write received an attributable response, but its shape
                 // cannot prove success or rejection. Treat device state as
                 // uncertain even for the first step and recover by read-back.
                 throw await writeRecoveryError(
+                    session: session,
                     key: key,
                     qualification: qualification,
                     step: index,
@@ -239,11 +248,13 @@ public final class LiveHeadsetController: HeadsetController {
                     underlying: HeadsetError.malformedResponse
                 )
             } catch {
+                try requireSession(session)
                 // A later step failed after earlier steps were acknowledged:
                 // observe and report partial device state (AUD-007). No
                 // rollback is attempted without proven-safe ordering.
                 if index > 0 {
                     throw await writeRecoveryError(
+                        session: session,
                         key: key,
                         qualification: qualification,
                         step: index,
@@ -261,7 +272,7 @@ public final class LiveHeadsetController: HeadsetController {
         do {
             for transaction in qualification.readBackTransactions {
                 try Task.checkCancellation()
-                readBackResponses.append(try await transport.transact(transaction, timeout: .seconds(3)))
+                readBackResponses.append(try await transact(transaction, session: session))
             }
             storedValue = try qualification.readBackDecoder(readBackResponses)
             try applyConfirmedReadBack(
@@ -270,10 +281,12 @@ public final class LiveHeadsetController: HeadsetController {
                 responses: readBackResponses
             )
         } catch is CancellationError {
+            try requireSession(session)
             invalidateUnverifiedState(for: key)
             _ = publish()
             throw CancellationError()
         } catch {
+            try requireSession(session)
             invalidateUnverifiedState(for: key)
             _ = publish()
             throw HeadsetError.transport(
@@ -301,9 +314,8 @@ public final class LiveHeadsetController: HeadsetController {
     public func discoverReadOnly(
         progress: @escaping @MainActor @Sendable (ReadOnlyDiscoveryProgress) -> Void
     ) async throws -> ReadOnlyDiscoveryResult {
-        guard case .connected(.bluetooth) = snapshot.connection else {
-            throw HeadsetError.disconnected
-        }
+        let session = connectionGeneration
+        try requireSession(session)
 
         let probes = ReadOnlyDiscoveryPlan.probes
         let startedAt = Date.now
@@ -328,9 +340,7 @@ public final class LiveHeadsetController: HeadsetController {
         do {
             for (index, probe) in probes.enumerated() {
                 try Task.checkCancellation()
-                guard case .connected(.bluetooth) = snapshot.connection else {
-                    throw HeadsetError.disconnected
-                }
+                try requireSession(session)
 
                 progress(ReadOnlyDiscoveryProgress(
                     completed: index,
@@ -349,8 +359,9 @@ public final class LiveHeadsetController: HeadsetController {
                 )
 
                 do {
-                    let response = try await transport.transact(
+                    let response = try await transact(
                         probe.transaction,
+                        session: session,
                         timeout: probe.timeout
                     )
                     responseCount += 1
@@ -383,6 +394,7 @@ public final class LiveHeadsetController: HeadsetController {
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch HeadsetError.timeout {
+                    try requireSession(session)
                     timeoutCount += 1
                     DiagnosticRecorder.shared.record(
                         "protocol-discovery",
@@ -390,6 +402,7 @@ public final class LiveHeadsetController: HeadsetController {
                         details: ["probe": probe.identifier]
                     )
                 } catch {
+                    try requireSession(session)
                     failureCount += 1
                     DiagnosticRecorder.shared.record(
                         "protocol-discovery",
@@ -426,6 +439,7 @@ public final class LiveHeadsetController: HeadsetController {
             throw error
         }
 
+        try requireSession(session)
         if !decodedSettings.isEmpty {
             snapshot.lastUpdated = .now
         }
@@ -492,6 +506,7 @@ public final class LiveHeadsetController: HeadsetController {
     /// and reports the observed state. Returns the error to throw and publishes
     /// observed values when decodable (AUD-007, WL5024-POST-AUD-002).
     private func writeRecoveryError(
+        session: UInt64,
         key: HeadsetSettingKey,
         qualification: WriteQualification,
         step: Int,
@@ -503,7 +518,7 @@ public final class LiveHeadsetController: HeadsetController {
             for transaction in qualification.readBackTransactions {
                 try Task.checkCancellation()
                 readBackResponses.append(
-                    try await transport.transact(transaction, timeout: .seconds(3))
+                    try await transact(transaction, session: session)
                 )
             }
             let observed = try qualification.readBackDecoder(readBackResponses)
@@ -531,10 +546,12 @@ public final class LiveHeadsetController: HeadsetController {
                 : "The \(key.rawValue) change could not be confirmed (observed \(String(describing: observed))). Check the setting and try again."
             return HeadsetError.transport(message)
         } catch is CancellationError {
+            guard isCurrentSession(session) else { return HeadsetError.disconnected }
             invalidateUnverifiedState(for: key)
             _ = publish()
             return CancellationError()
         } catch {
+            guard isCurrentSession(session) else { return HeadsetError.disconnected }
             invalidateUnverifiedState(for: key)
             _ = publish()
             DiagnosticRecorder.shared.record(
@@ -624,7 +641,13 @@ public final class LiveHeadsetController: HeadsetController {
     }
 
     private func handle(_ update: TransportUpdate) {
+        let wasConnected = snapshot.connection == .connected(.bluetooth)
         TransportStateReducer.apply(update, to: &snapshot)
+        if case .connectedBluetooth = update {
+            connectionGeneration &+= 1
+        } else if wasConnected, snapshot.connection != .connected(.bluetooth) {
+            connectionGeneration &+= 1
+        }
         updateReadiness()
 
         if case .failed(_, let message, false) = update,
@@ -638,6 +661,39 @@ public final class LiveHeadsetController: HeadsetController {
             )
         }
         _ = publish()
+    }
+
+    private func isCurrentSession(_ session: UInt64) -> Bool {
+        session == connectionGeneration && snapshot.connection == .connected(.bluetooth)
+    }
+
+    private func requireSession(_ session: UInt64) throws {
+        guard isCurrentSession(session) else { throw HeadsetError.disconnected }
+    }
+
+    /// Check both sides of every suspension, including failures. An expired
+    /// operation must not dispatch, recover, or invalidate the next session.
+    private func transact(
+        _ transaction: TransportTransaction,
+        session: UInt64,
+        timeout: Duration = .seconds(3),
+        isWrite: Bool = false
+    ) async throws -> Data {
+        try requireSession(session)
+        try Task.checkCancellation()
+        let response: Data
+        do {
+            if isWrite {
+                response = try await transport.transactWrite(transaction, timeout: timeout)
+            } else {
+                response = try await transport.transact(transaction, timeout: timeout)
+            }
+        } catch {
+            try requireSession(session)
+            throw error
+        }
+        try requireSession(session)
+        return response
     }
 
     private func updateReadiness() {

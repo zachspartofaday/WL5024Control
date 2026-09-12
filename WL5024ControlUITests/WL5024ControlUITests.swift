@@ -137,6 +137,32 @@ final class WL5024ControlUITests: XCTestCase {
         XCTAssertTrue(unknownSmartSwitch.waitForExistence(timeout: 2))
         XCTAssertEqual(unknownSmartSwitch.label, "Smart Switch")
         XCTAssertEqual(unknownSmartSwitch.value as? String, "Not read from headset")
+
+        let statusItem = app.statusItems["WL5024 connected"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 3))
+        statusItem.click()
+        XCTAssertTrue(app.menuItems["Automatic media control"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.menuItems["Experimental — response verification required"].exists)
+    }
+
+    @MainActor
+    func testBluetoothPermissionRecoveryExplainsPrivacyDestination() {
+        let app = launch(["--ui-bluetooth-denied"])
+        XCTAssertTrue(app.buttons["Open Bluetooth Privacy Settings"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts[
+            "In System Settings → Privacy & Security → Bluetooth, allow WL5024 Control to use Bluetooth. Then return here and reconnect."
+        ].exists)
+        XCTAssertFalse(app.buttons["Refresh"].isEnabled)
+
+        app.buttons["Open Bluetooth Privacy Settings"].click()
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.systempreferences")
+        let permissionExplanation = settings.staticTexts.matching(NSPredicate(
+            format: "(label CONTAINS[c] %@ OR value CONTAINS[c] %@) AND (label CONTAINS[c] %@ OR value CONTAINS[c] %@)",
+            "Allow", "Allow", "Bluetooth", "Bluetooth"
+        )).firstMatch
+        XCTAssertTrue(permissionExplanation.waitForExistence(timeout: 10),
+                      "The destination must show app permissions for Bluetooth")
+        app.activate()
     }
 
     @MainActor

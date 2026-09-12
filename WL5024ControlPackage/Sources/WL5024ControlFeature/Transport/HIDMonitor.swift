@@ -117,6 +117,7 @@ final class HIDMonitor: HIDMonitoring {
     func stop() {
         source.stop()
         interfaces.removeAll(keepingCapacity: true)
+        recorder.setReceiverInterfaces([])
         updateHandler = nil
     }
 
@@ -127,6 +128,7 @@ final class HIDMonitor: HIDMonitoring {
                 return
             }
             interfaces[descriptor.identity] = descriptor
+            recorder.setReceiverInterfaces(Array(interfaces.values))
             recorder.record(
                 "hid",
                 "WL5024 receiver interface matched",
@@ -136,6 +138,7 @@ final class HIDMonitor: HIDMonitoring {
 
         case .removed(let identity):
             guard interfaces.removeValue(forKey: identity) != nil else { return }
+            recorder.setReceiverInterfaces(Array(interfaces.values))
             recorder.record(
                 "hid",
                 "WL5024 receiver interface removed",

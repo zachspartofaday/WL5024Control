@@ -12,10 +12,8 @@ enum TransportStateReducer {
         case .searching(.receiver):
             break
         case .connectedBluetooth(_, let identifier):
-            if snapshot.device.bluetoothSessionId != identifier {
-                invalidateLiveValues(&snapshot)
-                snapshot.device.bluetoothSessionId = identifier
-            }
+            invalidateLiveValues(&snapshot)
+            snapshot.device.bluetoothSessionId = identifier
             snapshot.connection = .connected(.bluetooth)
             snapshot.device.transport = .bluetooth
         case .receiverFound:
@@ -43,30 +41,19 @@ enum TransportStateReducer {
                 ? .qualificationRequired(.receiver)
                 : .searching
         case .bluetoothPermissionDenied:
-            if !snapshot.connection.isConnected {
-                snapshot.connection = .bluetoothPermissionDenied
-            }
+            endBluetoothSession(&snapshot)
+            snapshot.connection = .bluetoothPermissionDenied
         case .bluetoothUnavailable:
-            if !snapshot.connection.isConnected {
-                snapshot.connection = .unavailable
-            }
+            endBluetoothSession(&snapshot)
+            snapshot.connection = snapshot.device.receiverDetected
+                ? .qualificationRequired(.receiver)
+                : .unavailable
         case .failed(let source, _, let willRetry):
-            if !snapshot.connection.isConnected, willRetry {
+            if source == .bluetooth {
+                endBluetoothSession(&snapshot)
                 snapshot.connection = snapshot.device.receiverDetected
                     ? .qualificationRequired(.receiver)
-                    : .searching
-            } else if !willRetry, source == .bluetooth,
-                      source == snapshot.device.transport || !snapshot.connection.isConnected {
-                // A terminal Bluetooth failure ends that session/search, but
-                // a detected receiver remains a valid discovery fallback.
-                if snapshot.device.transport == .bluetooth {
-                    invalidateLiveValues(&snapshot)
-                    snapshot.device.bluetoothSessionId = nil
-                }
-                snapshot.device.transport = snapshot.device.receiverDetected ? .receiver : nil
-                snapshot.connection = snapshot.device.receiverDetected
-                    ? .qualificationRequired(.receiver)
-                    : .failed
+                    : (willRetry ? .searching : .failed)
             } else if !willRetry, source == .receiver,
                       source == snapshot.device.transport,
                       !snapshot.connection.isConnected {
@@ -78,6 +65,12 @@ enum TransportStateReducer {
         case .unsolicitedBluetooth:
             break
         }
+    }
+
+    private static func endBluetoothSession(_ snapshot: inout HeadsetSnapshot) {
+        invalidateLiveValues(&snapshot)
+        snapshot.device.bluetoothSessionId = nil
+        snapshot.device.transport = snapshot.device.receiverDetected ? .receiver : nil
     }
 
     /// Removes live values/confidence/freshness so a new session cannot

@@ -43,7 +43,7 @@ struct CapabilityCatalogTests {
         let data = try await DiagnosticExporter.encode(payload)
         let report = try JSONDecoder.iso8601.decode(DiagnosticReport.self, from: data)
 
-        #expect(report.formatVersion == 1)
+        #expect(report.formatVersion == 2)
         #expect(report.capabilities.count == HeadsetSettingKey.allCases.count)
         #expect(report.entries.contains { $0.details["serialNumber"] == "PERSONAL-DEVICE" })
     }

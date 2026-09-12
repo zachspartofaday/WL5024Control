@@ -54,7 +54,7 @@ final class TransportCoordinator: HeadsetTransporting {
     }
 
     private func handleBluetooth(_ update: TransportUpdate) {
-        if case .connectedBluetooth(_, let identifier) = update, activeKind == nil {
+        if case .connectedBluetooth(_, let identifier) = update {
             activeKind = .bluetooth
             activeBluetoothIdentifier = identifier
         } else if case .bluetoothDisconnected(let identifier) = update,
@@ -64,6 +64,13 @@ final class TransportCoordinator: HeadsetTransporting {
             activeBluetoothIdentifier = nil
         } else if case .bluetoothDisconnected = update {
             return
+        }
+        switch update {
+        case .bluetoothUnavailable, .bluetoothPermissionDenied, .failed(.bluetooth, _, _):
+            activeKind = nil
+            activeBluetoothIdentifier = nil
+        default:
+            break
         }
         updateHandler?(update)
     }

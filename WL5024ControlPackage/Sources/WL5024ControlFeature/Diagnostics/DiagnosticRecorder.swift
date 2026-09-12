@@ -23,6 +23,25 @@ public struct DiagnosticEntry: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct DiagnosticReport: Codable, Equatable, Sendable {
+    public struct Retention: Codable, Equatable, Sendable {
+        public let capacity: Int
+        public let retainedCount: Int
+        public let totalRecordedCount: UInt64
+        public let droppedCount: UInt64
+        public let oldestEntryAt: Date?
+        public let newestEntryAt: Date?
+    }
+
+    public struct Interface: Codable, Equatable, Sendable {
+        public let identifier: String
+        public let details: [String: String]
+    }
+
+    public struct Inventory: Codable, Equatable, Sendable {
+        public let bluetooth: Interface?
+        public let receiverInterfaces: [Interface]
+    }
+
     public struct Device: Codable, Equatable, Sendable {
         public let model: String
         public let headsetFirmware: String?
@@ -45,6 +64,8 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
     public let privacy: String
     public let device: Device
     public let capabilities: [Capability]
+    public let retention: Retention
+    public let inventory: Inventory
     public let entries: [DiagnosticEntry]
 
     public init(
@@ -55,6 +76,8 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
         privacy: String,
         device: Device,
         capabilities: [Capability],
+        retention: Retention,
+        inventory: Inventory,
         entries: [DiagnosticEntry]
     ) {
         self.formatVersion = formatVersion
@@ -64,6 +87,8 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
         self.privacy = privacy
         self.device = device
         self.capabilities = capabilities
+        self.retention = retention
+        self.inventory = inventory
         self.entries = entries
     }
 }
@@ -73,6 +98,8 @@ public final class DiagnosticRecorder {
     public static let shared = DiagnosticRecorder()
 
     private var buffer: FixedCapacityRingBuffer<DiagnosticEntry>
+    private var bluetoothInventory: DiagnosticReport.Interface?
+    private var receiverInventory: [DiagnosticReport.Interface] = []
 
     public var entries: [DiagnosticEntry] { buffer.elements }
 
@@ -88,13 +115,31 @@ public final class DiagnosticRecorder {
         buffer.append(DiagnosticEntry(category: category, message: message, details: details))
     }
 
+    // Current interfaces are owned by the transport adapters, independently of
+    // the rolling event history. Removal/teardown explicitly clears them.
+    func setBluetoothConnection(_ metadata: BluetoothConnectionMetadata?) {
+        bluetoothInventory = metadata.map {
+            DiagnosticReport.Interface(
+                identifier: $0.identifier.uuidString,
+                details: $0.diagnosticDetails.merging(["name": $0.name]) { _, current in current }
+            )
+        }
+    }
+
+    func setReceiverInterfaces(_ descriptors: [HIDInterfaceDescriptor]) {
+        receiverInventory = descriptors.map {
+            DiagnosticReport.Interface(identifier: $0.identity.description, details: $0.diagnosticDetails)
+        }.sorted { $0.identifier < $1.identifier }
+    }
+
     public func report(snapshot: HeadsetSnapshot) -> DiagnosticReport {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         let appVersion = [version, build].compactMap { $0 }.joined(separator: " (")
+        let retainedEntries = entries
 
         return DiagnosticReport(
-            formatVersion: 1,
+            formatVersion: 2,
             generatedAt: .now,
             appVersion: appVersion.isEmpty ? "development" : appVersion + (build == nil ? "" : ")"),
             operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
@@ -114,7 +159,19 @@ public final class DiagnosticRecorder {
                     evidence: $0.evidence
                 )
             },
-            entries: entries
+            retention: DiagnosticReport.Retention(
+                capacity: buffer.capacity,
+                retainedCount: buffer.count,
+                totalRecordedCount: UInt64(buffer.count) + buffer.droppedCount,
+                droppedCount: buffer.droppedCount,
+                oldestEntryAt: retainedEntries.first?.timestamp,
+                newestEntryAt: retainedEntries.last?.timestamp
+            ),
+            inventory: DiagnosticReport.Inventory(
+                bluetooth: bluetoothInventory,
+                receiverInterfaces: receiverInventory
+            ),
+            entries: retainedEntries
         )
 
     }

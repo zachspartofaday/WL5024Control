@@ -52,7 +52,7 @@ public struct HeadsetSettingsView: View {
                 Button("Reconnect") { model.reconnect() }
                 Button("Cancel", role: .cancel, action: model.dismissFailure)
             case .openBluetoothSettings:
-                Button("Open Bluetooth Settings", action: openBluetoothSettings)
+                Button("Open Bluetooth Privacy Settings", action: openBluetoothSettings)
                 Button("Cancel", role: .cancel, action: model.dismissFailure)
             case .chooseAnotherLocation, .dismiss:
                 Button("Dismiss", role: .cancel, action: model.dismissFailure)
@@ -61,10 +61,7 @@ public struct HeadsetSettingsView: View {
     }
 
     private func openBluetoothSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.Bluetooth-Settings.extension") else {
-            return
-        }
-        NSWorkspace.shared.open(url)
+        BluetoothPrivacySettings.open()
         model.dismissFailure()
     }
 }
@@ -95,9 +92,9 @@ private struct OverviewView: View {
                 ContentUnavailableView {
                     Label("Bluetooth access is off", systemImage: "bluetooth.slash")
                 } description: {
-                    Text("Allow WL5024 Control to use Bluetooth, then return here and reconnect.")
+                    Text("In System Settings → Privacy & Security → Bluetooth, allow WL5024 Control to use Bluetooth. Then return here and reconnect.")
                 } actions: {
-                    Button("Open Bluetooth Settings", action: openBluetoothSettings)
+                    Button("Open Bluetooth Privacy Settings", action: openBluetoothSettings)
                 }
             }
 
@@ -114,7 +111,13 @@ private struct OverviewView: View {
     }
 
     private func openBluetoothSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.Bluetooth-Settings.extension") else {
+        BluetoothPrivacySettings.open()
+    }
+}
+
+private enum BluetoothPrivacySettings {
+    static func open() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") else {
             return
         }
         NSWorkspace.shared.open(url)
