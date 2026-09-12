@@ -71,6 +71,9 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
     private var retryTask: Task<Void, Never>?
     private var connectionTimeoutTask: Task<Void, Never>?
     private var connectionAttempt = 0
+    private var connectionGeneration: UInt64 = 0
+    private var peripheralDelegate: BluetoothPeripheralDelegate?
+    private var needsFreshManager = false
     private var eventHandler: (@MainActor (BluetoothAdapterEvent) -> Void)?
 
     func start(eventHandler: @escaping @MainActor (BluetoothAdapterEvent) -> Void) {
@@ -83,18 +86,11 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
     }
 
     func stop() {
-        retryTask?.cancel()
-        retryTask = nil
-        connectionTimeoutTask?.cancel()
-        connectionTimeoutTask = nil
-        if let peripheral {
-            centralManager?.cancelPeripheralConnection(peripheral)
-        }
+        tearDownConnection()
         centralManager?.stopScan()
+        centralManager?.delegate = nil
         centralManager = nil
-        peripheral = nil
-        writeCharacteristic = nil
-        notifyCharacteristic = nil
+        needsFreshManager = false
         connectionAttempt = 0
         isReady = false
         emit(.lifecycle(.stop))
@@ -119,6 +115,15 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
         guard let centralManager else { return }
         switch centralManager.state {
         case .poweredOn:
+            if needsFreshManager {
+                // A fresh manager separates late central callbacks from a
+                // reconnection to the very same peripheral UUID.
+                centralManager.stopScan()
+                centralManager.delegate = nil
+                needsFreshManager = false
+                self.centralManager = CBCentralManager(delegate: self, queue: .main)
+                return
+            }
             guard peripheral == nil, !centralManager.isScanning else { return }
             emit(.lifecycle(.startScanning))
             emit(.searching)
@@ -162,12 +167,17 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
             )
         case .unauthorized:
+            tearDownConnection()
             emit(.permissionDenied)
         case .unsupported, .poweredOff:
+            tearDownConnection()
             emit(.unavailable)
         case .resetting, .unknown:
+            tearDownConnection()
+            emit(.failed(message: "Bluetooth is resetting or initializing.", willRetry: true))
             emit(.searching)
         @unknown default:
+            tearDownConnection()
             emit(.unavailable)
         }
     }
@@ -178,7 +188,8 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
         source: String,
         diagnosticDetails: [String: String]
     ) {
-        guard peripheral == nil else { return }
+        guard central === centralManager, central.state == .poweredOn,
+              peripheral == nil else { return }
         let details = diagnosticDetails.merging([
             "name": candidate.name ?? "",
             "identifier": candidate.identifier.uuidString,
@@ -191,9 +202,13 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
         )
         connectionTimeoutTask?.cancel()
         connectionAttempt += 1
+        connectionGeneration &+= 1
+        let generation = connectionGeneration
         peripheral = candidate
         emit(.lifecycle(.discoveredPeripheral))
-        candidate.delegate = self
+        let delegate = BluetoothPeripheralDelegate(owner: self, generation: generation)
+        peripheralDelegate = delegate
+        candidate.delegate = delegate
         central.stopScan()
         DiagnosticRecorder.shared.record(
             "bluetooth",
@@ -209,7 +224,7 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
             do {
                 try await Task.sleep(for: Self.connectionTimeout)
                 guard let self,
-                      self.peripheral?.identifier == candidate.identifier,
+                      self.accepts(candidate, generation: generation),
                       !self.isReady else { return }
                 DiagnosticRecorder.shared.record(
                     "bluetooth",
@@ -224,7 +239,7 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
                 // Readiness, failure, or source shutdown cancelled the watchdog.
             } catch {
                 guard let self,
-                      self.peripheral?.identifier == candidate.identifier,
+                      self.accepts(candidate, generation: generation),
                       !self.isReady else { return }
                 self.failSetup("The Bluetooth connection attempt timed out.")
             }
@@ -254,6 +269,7 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
             failSetup("The headset did not enable control notifications.")
             return
         }
+        guard !isReady else { return }
         isReady = true
         connectionTimeoutTask?.cancel()
         connectionTimeoutTask = nil
@@ -284,18 +300,9 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
     }
 
     private func failSetup(_ message: String, willRetry: Bool = true) {
-        connectionTimeoutTask?.cancel()
-        connectionTimeoutTask = nil
-        isReady = false
-        writeCharacteristic = nil
-        notifyCharacteristic = nil
+        tearDownConnection()
         emit(.lifecycle(.setupFailed))
         emit(.failed(message: message, willRetry: willRetry))
-        if let peripheral {
-            centralManager?.cancelPeripheralConnection(peripheral)
-        }
-        peripheral = nil
-        retryTask?.cancel()
         guard willRetry else {
             retryTask = nil
             return
@@ -311,10 +318,36 @@ final class CoreBluetoothEventSource: NSObject, BluetoothEventSourcing {
             }
         }
     }
+
+    fileprivate func accepts(_ candidate: CBPeripheral, generation: UInt64) -> Bool {
+        generation == connectionGeneration && peripheral === candidate
+            && centralManager?.state == .poweredOn
+    }
+
+    private func tearDownConnection(cancelConnection: Bool = true) {
+        connectionGeneration &+= 1
+        retryTask?.cancel()
+        retryTask = nil
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = nil
+        isReady = false
+        if let peripheral {
+            needsFreshManager = true
+            peripheral.delegate = nil
+            if cancelConnection, centralManager?.state == .poweredOn {
+                centralManager?.cancelPeripheralConnection(peripheral)
+            }
+        }
+        peripheral = nil
+        peripheralDelegate = nil
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+    }
 }
 
 extension CoreBluetoothEventSource: @preconcurrency CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        guard central === centralManager else { return }
         DiagnosticRecorder.shared.record(
             "bluetooth",
             "Central state changed",
@@ -333,7 +366,8 @@ extension CoreBluetoothEventSource: @preconcurrency CBCentralManagerDelegate {
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
-        guard self.peripheral == nil else { return }
+        guard central === centralManager, central.state == .poweredOn,
+              self.peripheral == nil, !needsFreshManager else { return }
         let advertisedName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
         let advertisedServices = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? [])
             .map(\.uuidString)
@@ -359,10 +393,8 @@ extension CoreBluetoothEventSource: @preconcurrency CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        guard self.peripheral?.identifier == peripheral.identifier else {
-            central.cancelPeripheralConnection(peripheral)
-            return
-        }
+        guard central === centralManager, self.peripheral === peripheral,
+              central.state == .poweredOn else { return }
         emit(.lifecycle(.connected))
         DiagnosticRecorder.shared.record(
             "bluetooth",
@@ -377,7 +409,7 @@ extension CoreBluetoothEventSource: @preconcurrency CBCentralManagerDelegate {
         didFailToConnect peripheral: CBPeripheral,
         error: (any Error)?
     ) {
-        guard self.peripheral?.identifier == peripheral.identifier else { return }
+        guard central === centralManager, self.peripheral === peripheral else { return }
         failSetup(error?.localizedDescription ?? "Unable to connect over Bluetooth.")
     }
 
@@ -388,10 +420,8 @@ extension CoreBluetoothEventSource: @preconcurrency CBCentralManagerDelegate {
         isReconnecting: Bool,
         error: (any Error)?
     ) {
-        guard self.peripheral?.identifier == peripheral.identifier else { return }
-        connectionTimeoutTask?.cancel()
-        connectionTimeoutTask = nil
-        isReady = false
+        guard central === centralManager, self.peripheral === peripheral else { return }
+        tearDownConnection(cancelConnection: false)
         DiagnosticRecorder.shared.record(
             "bluetooth",
             "Peripheral disconnected",
@@ -400,9 +430,6 @@ extension CoreBluetoothEventSource: @preconcurrency CBCentralManagerDelegate {
                 "error": error?.localizedDescription ?? "",
             ]
         )
-        self.peripheral = nil
-        writeCharacteristic = nil
-        notifyCharacteristic = nil
         emit(.disconnected(identifier: peripheral.identifier))
         beginScanningIfPossible()
     }
@@ -422,7 +449,7 @@ private extension CoreBluetoothEventSource {
     }
 }
 
-extension CoreBluetoothEventSource: @preconcurrency CBPeripheralDelegate {
+fileprivate extension CoreBluetoothEventSource {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: (any Error)?) {
         if let error {
             failSetup(error.localizedDescription)
@@ -460,7 +487,7 @@ extension CoreBluetoothEventSource: @preconcurrency CBPeripheralDelegate {
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: (any Error)?
     ) {
-        guard characteristic.uuid == notifyCharacteristic?.uuid else { return }
+        guard characteristic === notifyCharacteristic else { return }
         if let error {
             failSetup(error.localizedDescription)
         } else {
@@ -473,11 +500,12 @@ extension CoreBluetoothEventSource: @preconcurrency CBPeripheralDelegate {
         didUpdateValueFor characteristic: CBCharacteristic,
         error: (any Error)?
     ) {
+        guard isReady, characteristic === notifyCharacteristic else { return }
         if let error {
-            emit(.failed(message: error.localizedDescription, willRetry: false))
+            failSetup(error.localizedDescription, willRetry: false)
             return
         }
-        guard characteristic.uuid == notifyCharacteristic?.uuid, let value = characteristic.value else {
+        guard let value = characteristic.value else {
             return
         }
         DiagnosticRecorder.shared.record(
@@ -496,10 +524,53 @@ extension CoreBluetoothEventSource: @preconcurrency CBPeripheralDelegate {
         didWriteValueFor characteristic: CBCharacteristic,
         error: (any Error)?
     ) {
+        guard isReady, characteristic === writeCharacteristic else { return }
         if let error {
             emit(.writeFailed(error.localizedDescription))
         } else {
             emit(.writeAcknowledged(characteristic: characteristic.uuid.uuidString))
         }
+    }
+}
+
+/// Each connection owns its delegate. Already queued callbacks retain the old
+/// generation and cannot be credited to a replacement connection.
+@MainActor
+private final class BluetoothPeripheralDelegate: NSObject, @preconcurrency CBPeripheralDelegate {
+    private weak var owner: CoreBluetoothEventSource?
+    private let generation: UInt64
+
+    init(owner: CoreBluetoothEventSource, generation: UInt64) {
+        self.owner = owner
+        self.generation = generation
+    }
+
+    private func activeOwner(for peripheral: CBPeripheral) -> CoreBluetoothEventSource? {
+        guard let owner, owner.accepts(peripheral, generation: generation) else { return nil }
+        return owner
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: (any Error)?) {
+        activeOwner(for: peripheral)?.peripheral(peripheral, didDiscoverServices: error)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService,
+                    error: (any Error)?) {
+        activeOwner(for: peripheral)?.peripheral(peripheral, didDiscoverCharacteristicsFor: service, error: error)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic,
+                    error: (any Error)?) {
+        activeOwner(for: peripheral)?.peripheral(peripheral, didUpdateNotificationStateFor: characteristic, error: error)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic,
+                    error: (any Error)?) {
+        activeOwner(for: peripheral)?.peripheral(peripheral, didUpdateValueFor: characteristic, error: error)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic,
+                    error: (any Error)?) {
+        activeOwner(for: peripheral)?.peripheral(peripheral, didWriteValueFor: characteristic, error: error)
     }
 }

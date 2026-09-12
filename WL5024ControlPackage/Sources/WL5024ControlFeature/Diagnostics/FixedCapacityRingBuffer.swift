@@ -5,6 +5,7 @@ struct FixedCapacityRingBuffer<Element> {
     private var storage: [Element?]
     private var startIndex = 0
     private(set) var count = 0
+    private(set) var droppedCount: UInt64 = 0
 
     init(capacity: Int) {
         precondition(capacity > 0)
@@ -17,6 +18,7 @@ struct FixedCapacityRingBuffer<Element> {
             storage[(startIndex + count) % capacity] = element
             count += 1
         } else {
+            droppedCount += 1
             storage[startIndex] = element
             startIndex = (startIndex + 1) % capacity
         }

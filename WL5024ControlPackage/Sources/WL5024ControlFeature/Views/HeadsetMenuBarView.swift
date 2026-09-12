@@ -21,6 +21,9 @@ public struct HeadsetMenuBarView: View {
                     set: { model.set(.automaticMedia, to: .boolean($0)) }
                 ))
                 .disabled(model.discoveryState == .running)
+                if model.readiness(for: .automaticMedia) == .experimental {
+                    Text("Experimental — response verification required")
+                }
             } else {
                 Text("Automatic media control: \(enabled ? "On" : "Off")")
                 Text(readOnlyExplanation)

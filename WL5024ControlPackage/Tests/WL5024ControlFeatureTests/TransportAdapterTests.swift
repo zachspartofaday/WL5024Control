@@ -5,6 +5,83 @@ import Testing
 
 @MainActor
 struct TransportAdapterTests {
+    @Test func stalePeripheralDisconnectCannotEndTheCurrentTransaction() async throws {
+        let source = FakeBluetoothEventSource()
+        let transport = BLETransport(source: source)
+        transport.start()
+        source.emit(.ready(.init(name: "Current", identifier: UUID(), diagnosticDetails: [:])))
+        let task = Task {
+            try await transport.transact(WL5024Command.getWearDetection.transaction, timeout: .seconds(1))
+        }
+        await source.waitForWrite()
+        source.emit(.disconnected(identifier: UUID()))
+        #expect(transport.isReady)
+        #expect(transport.lifecycle == .ready)
+        let response = RaceFrame(packetType: .response, opcode: 0x0021, payload: Data([0, 2, 0])).encoded
+        source.emit(.received(response))
+        #expect(try await task.value == response)
+        transport.stop()
+    }
+
+    @Test(arguments: ["unavailable", "denied", "retry", "terminal", "replacement"], [false, true])
+    func connectionLossImmediatelyFailsPendingTransaction(event: String, isWrite: Bool) async {
+        let source = FakeBluetoothEventSource()
+        let recorder = DiagnosticRecorder(maximumEntries: 2)
+        let transport = BLETransport(source: source, recorder: recorder)
+        transport.start()
+        let metadata = BluetoothConnectionMetadata(name: "Fixture", identifier: UUID(), diagnosticDetails: ["notify": "fixture"])
+        source.emit(.ready(metadata))
+        recorder.record("fixture", "overflow 1")
+        recorder.record("fixture", "overflow 2")
+        recorder.record("fixture", "overflow 3")
+        #expect(recorder.report(snapshot: .demo()).inventory.bluetooth?.identifier == metadata.identifier.uuidString)
+
+        let task = Task {
+            if isWrite {
+                return try await transport.transactWrite(WL5024Command.getWearDetection.transaction, timeout: .seconds(60))
+            }
+            return try await transport.transact(WL5024Command.getWearDetection.transaction, timeout: .seconds(60))
+        }
+        await source.waitForWrite()
+        switch event {
+        case "unavailable": source.emit(.unavailable)
+        case "denied": source.emit(.permissionDenied)
+        case "retry": source.emit(.failed(message: "resetting", willRetry: true))
+        case "terminal": source.emit(.failed(message: "lost notifications", willRetry: false))
+        default: source.emit(.ready(metadata))
+        }
+        do {
+            _ = try await task.value
+            Issue.record("The pending transaction must fail on session loss")
+        } catch let error as DispatchedTransactionError {
+            #expect(isWrite)
+            #expect(!error.gattWriteAcknowledged)
+        } catch {
+            #expect(!isWrite)
+        }
+        #expect(transport.isReady == (event == "replacement"))
+        #expect(transport.lifecycle == (event == "replacement" ? .ready : event == "retry" ? .retrying : .stopped))
+        if event != "replacement" {
+            #expect(recorder.report(snapshot: .demo()).inventory.bluetooth == nil)
+        }
+        transport.stop()
+        #expect(recorder.report(snapshot: .demo()).inventory.bluetooth == nil)
+    }
+
+    @Test func cancelledTaskNeverDispatchesAWrite() async {
+        let source = FakeBluetoothEventSource()
+        let transport = BLETransport(source: source)
+        transport.start()
+        source.emit(.ready(.init(name: "Fixture", identifier: UUID(), diagnosticDetails: [:])))
+        let task = Task {
+            try await transport.transactWrite(WL5024Command.getWearDetection.transaction, timeout: .seconds(60))
+        }
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(source.writes.isEmpty)
+        transport.stop()
+    }
+
     @Test func bluetoothDiscoveryAcceptsOnlyKnownServiceOrWL5024Name() {
         let service = BluetoothDiscoveryPolicy.controlServiceIdentifier
         #expect(BluetoothDiscoveryPolicy.isCandidate(
@@ -263,14 +340,23 @@ struct TransportAdapterTests {
         #expect(monitor.retainedInterfaceCount == 2)
         #expect(collector.updates.filter { if case .receiverFound = $0 { true } else { false } }.count == 2)
         #expect(recorder.entries.filter { $0.category == "hid-input" }.count == 2)
+        for _ in 0..<30 { source.emit(.input(input(for: first.identity, value: 1))) }
+        #expect(recorder.report(snapshot: .demo()).inventory.receiverInterfaces.map(\.identifier) == [
+            first.identity.description, second.identity.description,
+        ])
 
         source.emit(.removed(first.identity))
         #expect(monitor.retainedInterfaceCount == 1)
         #expect(!collector.updates.contains(.receiverRemoved))
+        #expect(recorder.report(snapshot: .demo()).inventory.receiverInterfaces.map(\.identifier) == [second.identity.description])
 
         source.emit(.removed(second.identity))
         #expect(monitor.retainedInterfaceCount == 0)
         #expect(collector.updates.last == .receiverRemoved)
+        #expect(recorder.report(snapshot: .demo()).inventory.receiverInterfaces.isEmpty)
+        source.emit(.matched(first))
+        monitor.stop()
+        #expect(recorder.report(snapshot: .demo()).inventory.receiverInterfaces.isEmpty)
     }
 
     @Test func hidManagerOpenFailureIsRecordedAndEmitted() {
@@ -372,6 +458,7 @@ private final class FakeHIDEventSource: HIDEventSourcing {
 
 @MainActor
 private final class FakeBluetoothEventSource: BluetoothEventSourcing {
+    private let writeEvents = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
     private(set) var isReady = false
     private var handler: (@MainActor (BluetoothAdapterEvent) -> Void)?
     private(set) var writes: [Data] = []
@@ -389,13 +476,18 @@ private final class FakeBluetoothEventSource: BluetoothEventSourcing {
     func write(_ data: Data) throws {
         guard isReady else { throw HeadsetError.disconnected }
         writes.append(data)
+        writeEvents.continuation.yield()
+    }
+
+    func waitForWrite() async {
+        for await _ in writeEvents.stream { return }
     }
 
     func emit(_ event: BluetoothAdapterEvent) {
         switch event {
         case .ready:
             isReady = true
-        case .disconnected, .permissionDenied, .unavailable:
+        case .disconnected, .permissionDenied, .unavailable, .failed:
             isReady = false
         default:
             break

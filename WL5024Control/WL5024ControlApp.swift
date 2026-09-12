@@ -45,6 +45,7 @@ private struct LaunchProfile {
     let demoMode: Bool
     let readOnlyMode: Bool
     let experimentalMode: Bool
+    let bluetoothPermissionDenied: Bool
     let minimumWindow: Bool
     let colorScheme: ColorScheme?
     let fastDiscovery: Bool
@@ -53,6 +54,7 @@ private struct LaunchProfile {
         demoMode = arguments.contains("--demo")
         readOnlyMode = arguments.contains("--read-only")
         experimentalMode = arguments.contains("--experimental")
+        bluetoothPermissionDenied = arguments.contains("--ui-bluetooth-denied")
         minimumWindow = arguments.contains("--ui-minimum")
         fastDiscovery = arguments.contains("--ui-fast-discovery")
         colorScheme = arguments.contains("--appearance-light")
@@ -62,6 +64,11 @@ private struct LaunchProfile {
 
     @MainActor
     func makeModel() -> HeadsetModel {
+        if bluetoothPermissionDenied {
+            return HeadsetModel(demoMode: false, controller: MockHeadsetController(
+                snapshot: HeadsetSnapshot(connection: .bluetoothPermissionDenied)
+            ))
+        }
         if experimentalMode { return makeExperimentalModel() }
         guard readOnlyMode else {
             guard demoMode else { return HeadsetModel() }

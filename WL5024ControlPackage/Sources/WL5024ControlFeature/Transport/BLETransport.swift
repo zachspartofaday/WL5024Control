@@ -7,8 +7,11 @@ final class BLETransport: RawHeadsetTransport {
     private(set) var lifecycle: BluetoothLifecycleState = .stopped
 
     private let source: any BluetoothEventSourcing
+    private let recorder: DiagnosticRecorder
     private var updateHandler: (@Sendable (TransportUpdate) -> Void)?
+    private var activeIdentifier: UUID?
     private var pendingContinuation: CheckedContinuation<Data, any Error>?
+    private var pendingRequestID: UUID?
     private var pendingMatcher: RaceResponseMatcher?
     private var pendingTracksDispatchFailure = false
     private var pendingRequestDispatched = false
@@ -16,8 +19,9 @@ final class BLETransport: RawHeadsetTransport {
     private var timeoutTask: Task<Void, Never>?
     private var responseQuarantine = RaceResponseQuarantine()
 
-    init(source: any BluetoothEventSourcing = CoreBluetoothEventSource()) {
+    init(source: any BluetoothEventSourcing = CoreBluetoothEventSource(), recorder: DiagnosticRecorder = .shared) {
         self.source = source
+        self.recorder = recorder
     }
 
     func configure(updateHandler: @escaping @Sendable (TransportUpdate) -> Void) {
@@ -31,8 +35,11 @@ final class BLETransport: RawHeadsetTransport {
     }
 
     func stop() {
+        activeIdentifier = nil
+        recorder.setBluetoothConnection(nil)
         timeoutTask?.cancel()
         timeoutTask = nil
+        isReady = false
         failPending(with: CancellationError())
         source.stop()
         isReady = false
@@ -53,6 +60,7 @@ final class BLETransport: RawHeadsetTransport {
         timeout: Duration,
         tracksDispatchFailure: Bool
     ) async throws -> Data {
+        try Task.checkCancellation()
         guard isReady, source.isReady else { throw HeadsetError.disconnected }
         guard pendingContinuation == nil else { throw HeadsetError.busy }
         guard !responseQuarantine.contains(transaction.expectedResponse) else {
@@ -77,15 +85,19 @@ final class BLETransport: RawHeadsetTransport {
             details: ["bytes": DiagnosticRecorder.hex(transaction.request)]
         )
 
+        let requestID = UUID()
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
                 pendingContinuation = continuation
+                pendingRequestID = requestID
                 pendingMatcher = transaction.expectedResponse
                 pendingTracksDispatchFailure = tracksDispatchFailure
                 pendingRequestDispatched = false
                 pendingWriteAcknowledged = false
                 do {
                     try source.write(transaction.request)
+                    guard pendingRequestID == requestID else { return }
                     pendingRequestDispatched = true
                 } catch {
                     finishPending(with: .failure(error))
@@ -94,6 +106,7 @@ final class BLETransport: RawHeadsetTransport {
                 timeoutTask = Task { @MainActor [weak self] in
                     do {
                         try await Task.sleep(for: timeout)
+                        guard self?.pendingRequestID == requestID else { return }
                         DiagnosticRecorder.shared.record(
                             "bluetooth",
                             "RACE response timeout",
@@ -101,17 +114,17 @@ final class BLETransport: RawHeadsetTransport {
                                 "gattWriteAcknowledged": String(self?.pendingWriteAcknowledged ?? false),
                             ]
                         )
-                        self?.failPending(with: HeadsetError.timeout)
+                        self?.failPending(with: HeadsetError.timeout, requestID: requestID)
                     } catch is CancellationError {
                         // The response arrived or the transport stopped.
                     } catch {
-                        self?.failPending(with: HeadsetError.timeout)
+                        self?.failPending(with: HeadsetError.timeout, requestID: requestID)
                     }
                 }
             }
         } onCancel: {
             Task { @MainActor [weak self] in
-                self?.failPending(with: CancellationError())
+                self?.failPending(with: CancellationError(), requestID: requestID)
             }
         }
     }
@@ -123,21 +136,39 @@ final class BLETransport: RawHeadsetTransport {
         case .searching:
             updateHandler?(.searching(.bluetooth))
         case .ready(let metadata):
+            activeIdentifier = metadata.identifier
+            transition(.notificationsEnabled)
+            recorder.setBluetoothConnection(metadata)
+            isReady = false
+            failPending(with: HeadsetError.disconnected)
             isReady = true
             // A new CoreBluetooth connection is a fresh protocol session.
             responseQuarantine.removeAll()
             updateHandler?(.connectedBluetooth(name: metadata.name, identifier: metadata.identifier))
         case .disconnected(let identifier):
+            guard activeIdentifier == identifier else { return }
+            activeIdentifier = nil
+            transition(.setupFailed)
+            recorder.setBluetoothConnection(nil)
             isReady = false
             failPending(with: HeadsetError.disconnected)
             updateHandler?(.bluetoothDisconnected(identifier: identifier))
         case .permissionDenied:
+            activeIdentifier = nil
+            transition(.stop)
+            recorder.setBluetoothConnection(nil)
             isReady = false
+            failPending(with: HeadsetError.disconnected)
             updateHandler?(.bluetoothPermissionDenied)
         case .unavailable:
+            activeIdentifier = nil
+            transition(.stop)
+            recorder.setBluetoothConnection(nil)
             isReady = false
+            failPending(with: HeadsetError.disconnected)
             updateHandler?(.bluetoothUnavailable)
         case .received(let data):
+            guard isReady else { return }
             if responseQuarantine.drain(matching: data) {
                 DiagnosticRecorder.shared.record(
                     "bluetooth-rx",
@@ -178,6 +209,10 @@ final class BLETransport: RawHeadsetTransport {
         case .writeFailed(let message):
             failPending(with: HeadsetError.transport(message))
         case .failed(let message, let willRetry):
+            activeIdentifier = nil
+            transition(willRetry ? .setupFailed : .stop)
+            recorder.setBluetoothConnection(nil)
+            isReady = false
             if pendingContinuation != nil {
                 failPending(with: HeadsetError.transport(message))
             }
@@ -185,7 +220,8 @@ final class BLETransport: RawHeadsetTransport {
         }
     }
 
-    private func failPending(with error: any Error) {
+    private func failPending(with error: any Error, requestID: UUID? = nil) {
+        if let requestID, pendingRequestID != requestID { return }
         // If a request left CoreBluetooth but its attributable response never
         // arrived while this session remains live, the protocol has no request
         // identifier that can separate a late response from an identical retry.
@@ -210,6 +246,7 @@ final class BLETransport: RawHeadsetTransport {
         timeoutTask = nil
         guard let continuation = pendingContinuation else { return }
         pendingContinuation = nil
+        pendingRequestID = nil
         pendingMatcher = nil
         pendingTracksDispatchFailure = false
         pendingRequestDispatched = false
@@ -218,7 +255,9 @@ final class BLETransport: RawHeadsetTransport {
     }
 
     private func transition(_ event: BluetoothLifecycleEvent) {
-        lifecycle = BluetoothLifecyclePolicy.next(after: event)
+        let next = BluetoothLifecyclePolicy.next(after: event)
+        guard lifecycle != next else { return }
+        lifecycle = next
         DiagnosticRecorder.shared.record(
             "bluetooth",
             "Lifecycle changed",

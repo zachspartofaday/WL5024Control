@@ -7,6 +7,10 @@ enum ProbeExitStatus {
     static let usage: Int32 = 64
     /// Setup failure, timeout, I/O failure, or malformed response (EX_IOERR).
     static let failure: Int32 = 74
+
+    static func completedQueries(requests: Int, responses: Int, timeouts: Int) -> Int32 {
+        timeouts == 0 && responses == requests ? success : failure
+    }
 }
 
 @main
