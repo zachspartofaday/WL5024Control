@@ -68,3 +68,14 @@ fastlane/test_output
 WL5024-diagnostics*.json
 Artifacts/
 dist/
+
+# Signing credentials and local configuration
+*.p12
+*.p8
+*.key
+*.pem
+*.mobileprovision
+*.provisionprofile
+.env
+.env.*
+!.env.example

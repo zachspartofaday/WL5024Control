@@ -288,7 +288,7 @@ final class WL5024ControlUITests: XCTestCase {
 
     @MainActor
     private func attachScreenshot(named name: String, app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)

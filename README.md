@@ -1,89 +1,86 @@
 # WL5024 Control
 
-A lightweight, native macOS menu-bar and SwiftUI settings app for the Dell Premier Wireless ANC Headset WL5024. It was derived from Dell's firmware bundle and Windows WL5024 plug-in; it does not implement firmware flashing or factory reset.
+A native Mac app for the **Dell Premier Wireless ANC Headset WL5024**. Adjust wear detection, stop the headset from automatically controlling your music, and manage supported microphone and call settings from a settings window or the menu bar.
 
-## Requirements and product scope
+**Requires macOS 26 or newer and an Apple silicon Mac.** This is an independent community project, not an official Dell app or a complete replacement for Dell's software.
 
-- macOS 26 or newer on Apple silicon (`arm64`)
-- Xcode 26 or newer for local development
-- English interface copy; localization is intentionally outside this personal-app release scope
+[Download a release](https://github.com/zachspartofaday/WL5024Control/releases) · [Report a bug](https://github.com/zachspartofaday/WL5024Control/issues) · [Build from source](Documentation/DEVELOPMENT.md)
 
-Build 10 incorporates direct physical-headset captures. It exposes ten explicitly experimental Bluetooth writes whose getters answered on the physical WL5024: the six composite wear-sensor behaviors, sidetone, busy light, Voice Guidance, and microphone noise cancellation. Automatic power off, Environment Detection, Smart Switch, microphone-boom action, UC profile, UC app status, and firmware 4.1.4's LE Audio feature mode are visible read-only because their getters answered but their write contracts or value tables remain unqualified. Advanced Transparency and incoming-audio noise cancellation are hidden because their getters remained silent at both discovery and refresh timeouts. A write is sent only after the user chooses a value, and success requires the exact acknowledgement followed by an exact matching read-back. The standalone probe can issue bounded getters to a directly connected `413C:A520` headset over its validated USB HID wrapper; the shipping app and separate receiver path remain discovery-only.
+## What you can do
 
-## Run
+| Feature | Available controls |
+| --- | --- |
+| Wear and automation | Wear detection, automatic media pause/resume, mute when removed, answer calls when worn, Quick Pause and its sensitivity |
+| Calls and microphone | Sidetone (off or levels 0–5), busy light, microphone noise cancellation |
+| Voice guidance | Turn headset voice guidance on or off |
+| Menu bar | View connection state and toggle automatic media control once its current value is available |
+| Headset status | Refresh settings and view firmware or battery information when available |
+| Diagnostics | Inspect the connection, run read-only discovery, and export a local diagnostic log |
+| Demo mode | Explore the interface without connecting a headset |
 
-Open `WL5024Control.xcworkspace`, select the `WL5024Control` scheme, and run. Pass `--demo` as a launch argument to exercise every setting without a physical headset.
+**Live setting changes are experimental.** The app labels them accordingly and reports success only after the headset acknowledges a change and returns the requested value. Settings are changed only when you choose a value; connecting or refreshing does not change your preferences.
 
-The app first queries already-connected BLE peripherals for the recovered Airoha control service. If macOS's audio connection does not expose that route, it falls back to an unfiltered BLE scan but accepts only the recovered service UUID or a normalized `WL5024` device name before performing read-only service validation. A CoreBluetooth connection attempt that remains pending for 12 seconds is cancelled and retried through the same gated discovery path. The app also discovers candidate headset/HR024/UD2403 USB HID interfaces. USB writes remain disabled in the shipping app; the direct-headset command-line path constructs only the recovered generic preference getter.
+Automatic power off, Environment Detection, Smart Switch, microphone-boom action, UC profile/status, and LE Audio feature mode are **read-only** where the headset responds. Availability depends on the headset and firmware.
 
-## Hardware capture
+## Screenshots
 
-On a Mac with the headset paired and its USB receiver connected, open **Diagnostics**, choose **Run Read-only Discovery**, and then choose **Collect & Export Log…**. Before exporting, operate the headset buttons and wear sensor for a minute so the log includes representative HID input events. The JSON capture contains:
+These screenshots show the actual app in **demo mode**, with simulated connection details and values. Live controls may be experimental, read-only, or unavailable.
 
-- USB identity, serial/location data, report sizes, and the HID report descriptor
-- HID usage pages, usages, report IDs, timestamps, and observed values
-- Bluetooth peripheral identity, service/characteristic properties, and negotiated write sizes
-- Raw RACE requests, responses, and unsolicited notifications observed by the app
-- Every read-only discovery request, response, timeout, decoded setting, and run summary
-- The application capability map and its firmware/Windows-plugin evidence
+### Headset overview
 
-Files matching `*.wl5024log.json` and the local `Artifacts` directory are ignored by Git and must not be committed. Send the exported log separately for protocol analysis.
+![WL5024 Control overview showing connection status and automatic media control in demo mode](Documentation/Screenshots/overview.png)
 
-Diagnostic JSON format version 2 retains the most recent 5,000 events. Its `retention` object reports capacity, retained and total recorded counts, dropped count, and the oldest/newest retained timestamps (omitted for an empty capture). Counts cover the recorder's lifetime, including reconnects. The separate `inventory` object contains the current Bluetooth connection and receiver interfaces even when their original discovery events have rolled out of the buffer. Disconnect, removal, and stop clear the corresponding inventory. A nonzero dropped count means the event history is incomplete; consumers should check `formatVersion` before interpreting the report.
+### Wear and automation
 
-If Bluetooth permission is denied, choose **Open Bluetooth Privacy Settings**. The destination is **System Settings → Privacy & Security → Bluetooth**; follow that path manually if macOS does not open the pane directly. Allow the app there, then return and reconnect.
+![Wear and Automation settings showing wear detection, media control, call actions, and Quick Pause in demo mode](Documentation/Screenshots/wear-and-automation.png)
 
-For a Bluetooth-only capture, keep **Dell WL5024 Headset** connected in macOS Settings before launching the app and approve Bluetooth access when prompted. Once the app says Bluetooth is connected, choose **Refresh** to read the current state for every visible setting. Refresh deduplicates both successful and failed shared transactions; it sends at most thirteen distinct reads and can take at most roughly 39 seconds if each family is silent. For broader inventory, run the bounded 266-query Diagnostics discovery and leave the app open until it completes (up to roughly four minutes when most modules are silent). Change only values you intend to test, then export even if a command reports a timeout—the connection state, exact requests, GATT delivery acknowledgements, acknowledgements, read-backs, and unsolicited notifications are the evidence needed to validate the hardware path.
+### Calls and microphone
 
-The package also contains a command-line inspection tool:
+![Calls and Microphone settings showing sidetone and busy light in demo mode](Documentation/Screenshots/calls-and-microphone.png)
 
-```sh
-cd WL5024ControlPackage
-swift run WL5024Probe
-swift run WL5024Probe --packets
-swift run WL5024Probe --live --only=smart-switch --repeat=3 --timeout-ms=2000 --listen-seconds=0
-swift run WL5024Probe --live --only=firmware-v4.mic-flip-action --only=firmware-v4.uc-profile --only=firmware-v4.uc-app-status --only=firmware-v4.le-audio-feature-mode
-swift run WL5024Probe --usb --module=49
-```
+## Install and connect
 
-The `--live` path connects straight to the recovered CoreBluetooth service and prints each request, GATT acknowledgement, notification, match, and timeout. It is restricted to an explicit read-only getter list. The `--usb` path matches only the direct headset's Dell `413C:A520` vendor interface and sends one generic preference getter using the physically validated `06`/`07` HID wrapper. The `firmware-v4.*` probes are packet contracts recovered from Dell's August 2026 Windows SDK; the four physically validated values also appear read-only in the normal app surface.
+1. Download the release ZIP from [Releases](https://github.com/zachspartofaday/WL5024Control/releases), then double-click it to extract the app. If no release is listed yet, use the [source build instructions](Documentation/DEVELOPMENT.md).
+2. Move **WL5024Control.app** to **Applications** and open it. Release builds are signed with Developer ID and notarized by Apple.
+3. Pair and connect **Dell WL5024 Headset** in **System Settings → Bluetooth**.
+4. Allow Bluetooth access when the app asks. Keep the headset powered on and nearby while the app connects.
+5. Choose **Refresh** to read the available settings, then change only the settings you want to adjust.
 
-Probe exit codes are `0` for success, `64` for invalid arguments, and `74` for setup, I/O, response, or timeout failure. A completed Bluetooth query collection with any missing response exits `74`, preserving all partial results and the final response/timeout counts. Automation must check the exit code even when a log was produced.
+The app uses Bluetooth for settings control. It can detect compatible Dell USB receivers, but settings control through a receiver or a USB cable is not supported in the app.
 
-Live refreshes, writes, and discovery are bound to the connection in which they began. A disconnect, Bluetooth reset or permission loss, stop, or replacement connection aborts that work. Reconnecting to the same device also starts a new session; an old command cannot resume its writes or update the new session's values. Every writable live control remains explicitly experimental, including the menu-bar toggle after its current value becomes known.
-
-## Visible setting surface
-
-- Microphone noise cancellation, plus read-only Environment Detection
-- Sidetone levels 0–5/off and busy light
-- Wear detection, automatic media pause/resume, removal mute, wear-to-answer, and Quick Pause/sensitivity, plus read-only power-off timeout
-- Voice Guidance, plus read-only Smart Switch, microphone-boom action, UC profile/status, and LE Audio feature mode
-- Menu-bar automatic-media control, device state, battery display, diagnostics, and mock/demo operation
-
-The broader internal capability catalog still records firmware symbols and Windows vocabulary for future research, but incomplete controls—including ANC mode/level, Advanced Transparency, incoming-audio noise cancellation, EQ, device naming, touch/gesture controls, Windows-only Voice Prompts, assistant selection, and game/chat controls—do not appear in the normal UI. Experimental controls with an unknown current value show an explicit Set Value menu. Unknown wire values are never replaced with guessed defaults in live mode.
-
-## Architecture
-
-- `Core`: settings and device state model
-- `Protocol`: RACE framing, command encoding, and the complete capability catalog
-- `Transport`: CoreBluetooth plus read-only HID receiver discovery
-- `Model`: live and mock controllers with a SwiftUI observation model
-- `Views`: settings window, menu-bar commands, and diagnostics
-- `WL5024Probe`: terminal-readable capability and packet inspection
-
-See [PROTOCOL.md](Documentation/PROTOCOL.md) for the recovered wire format and validation checklist.
-
-## Validation gates
-
-Run repository validation through XcodeBuildMCP so local results use the same build/test workflow as the audit:
+To try the interface without a headset, quit the app and run:
 
 ```sh
-xcodebuildmcp macos build --workspace-path WL5024Control.xcworkspace --scheme WL5024Control
-xcodebuildmcp macos test --workspace-path WL5024Control.xcworkspace --scheme WL5024Control
-xcodebuildmcp swift-package test --package-path WL5024ControlPackage
-xcodebuildmcp swift-package build --package-path WL5024ControlPackage --configuration release
+open -a WL5024Control --args --demo
 ```
 
-The shared `WL5024Control` test plan contains both the Swift package tests and a demo-mode macOS UI smoke test with real navigation and accessible-name assertions. Swift 6 complete concurrency checking is enabled across the app, UI tests, and package. The expected clean gate is zero build warnings and zero test failures.
+Quit and reopen the app normally to return to your real headset.
 
-Manual accessibility scenarios and their expected outcomes are in [ACCESSIBILITY.md](Documentation/ACCESSIBILITY.md). Physical command qualification remains governed by [PROTOCOL.md](Documentation/PROTOCOL.md).
+## Current limitations
+
+- Firmware updates and factory reset are not supported.
+- Listening ANC mode/level, Advanced Transparency, incoming-audio noise cancellation, EQ, device naming, and touch/gesture customization are not available.
+- A Mac audio connection does not always expose the Bluetooth control connection the app needs. Some settings may remain unavailable or time out.
+- Intel Macs, macOS versions before 26, and other Dell headset models are not supported. The interface is currently English-only.
+
+## Troubleshooting and feedback
+
+**Bluetooth permission is off:** Open **System Settings → Privacy & Security → Bluetooth**, allow WL5024 Control, then return to the app and reconnect.
+
+**The headset is connected for audio, but settings are unavailable:** Check that the headset is powered on and connected in macOS Bluetooth settings. Reconnect in the app and choose Refresh. A refresh may take about 40 seconds when the headset does not respond.
+
+**A setting change fails:** Refresh and check its current value before trying again. The app will not claim that an unconfirmed change succeeded.
+
+For a bug report, include your app version, macOS version, headset firmware if known, and the steps that reproduce the problem. **Diagnostic exports can contain device identifiers, serial numbers, and raw headset traffic. Review and redact them before sharing; do not attach an unreviewed capture to a public issue.** See the [diagnostic guide](Documentation/DEVELOPMENT.md#hardware-capture) for details.
+
+For security concerns, follow the [security policy](SECURITY.md).
+
+## Development
+
+Built with SwiftUI, CoreBluetooth, and IOKit. Development requires Xcode 26 or newer. See the [developer guide](Documentation/DEVELOPMENT.md) for build and test commands, demo modes, the command-line probe, and hardware diagnostics.
+
+[Contributing](CONTRIBUTING.md) · [Protocol research](Documentation/PROTOCOL.md) · [Accessibility verification](Documentation/ACCESSIBILITY.md)
+
+## License
+
+[MIT](LICENSE) © 2026 Zachary Skjaveland. Dell and its product names are trademarks of their respective owners; this project is not affiliated with or endorsed by Dell.

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and package tests
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install validation tool
+        run: npm install --global xcodebuildmcp@2.7.0
+      - name: Record toolchain
+        run: |
+          xcodebuildmcp --version
+          xcodebuild -version
+          swift --version
+      - name: Build app without signing
+        run: >-
+          xcodebuildmcp macos build
+          --workspace-path WL5024Control.xcworkspace
+          --scheme WL5024Control
+          --configuration Release
+          --arch arm64
+          --json '{"extraArgs":["CODE_SIGNING_ALLOWED=NO"]}'
+      - name: Test Swift package
+        run: xcodebuildmcp swift-package test --package-path WL5024ControlPackage
+      - name: Build Release package
+        run: xcodebuildmcp swift-package build --package-path WL5024ControlPackage --configuration release
