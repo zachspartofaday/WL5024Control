@@ -18,7 +18,7 @@ Public CI builds the app without signing and runs package tests and the package 
 ## Repository protections
 
 - Require pull requests to `main`, resolve review conversations before merging, and enforce protection for admins. Block force pushes and branch deletion.
-- Require the `Build and package tests` check. A failed or unstarted run blocks merging until CI succeeds. No second-person approval is required for a sole-maintainer repository; CODEOWNERS identifies the maintainer for contributed changes.
+- Run the `Build and package tests` workflow and make it a required check when hosted Actions is available. The maintainer currently accepts the complete local validation gates while hosted CI is unavailable. No second-person approval is required for a sole-maintainer repository; CODEOWNERS identifies the maintainer for contributed changes.
 - Protect `v*` release tags from updates and deletion. Create a new version instead of moving an existing release tag.
 - Keep the Actions token read-only and disallow workflow approval of pull requests. The checkout action uses an immutable commit and does not retain Git credentials.
 - Keep signing/notarization outside public CI and require maintainer approval for all external contributors' workflow runs.
