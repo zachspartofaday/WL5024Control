@@ -10,7 +10,7 @@ PRODUCT_NAME = WL5024Control
 PRODUCT_DISPLAY_NAME = WL5024 Control
 PRODUCT_BUNDLE_IDENTIFIER = com.zachskjaveland.WL5024Control
 MARKETING_VERSION = 0.1.0
-CURRENT_PROJECT_VERSION = 10
+CURRENT_PROJECT_VERSION = 11
 
 // ==========================================
 // Platform Configuration

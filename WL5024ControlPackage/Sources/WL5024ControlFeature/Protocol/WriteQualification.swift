@@ -122,7 +122,7 @@ enum ShippingWriteQualifications {
                 let flags = try WL5024Command.getWearDetection.decodeWearDetectionFlags(from: responses[0])
                 return try WearDetectionFlags(rawValue: flags).value(for: key)
             },
-            comparison: ==
+            comparison: { $0 == $1 }
         )
     }
 
@@ -173,7 +173,7 @@ enum ShippingWriteQualifications {
             guard level <= 5 else { throw HeadsetError.malformedResponse }
             return stateByte == 0 ? .choice("off") : .choice(level.description)
         },
-        comparison: ==
+        comparison: { $0 == $1 }
     )
 
     private static func booleanQualification(
@@ -200,7 +200,7 @@ enum ShippingWriteQualifications {
                 guard responses.count == 1 else { throw HeadsetError.malformedResponse }
                 return .boolean(try getter.decodeStrictBoolean(from: responses[0]))
             },
-            comparison: ==
+            comparison: { $0 == $1 }
         )
     }
 }
