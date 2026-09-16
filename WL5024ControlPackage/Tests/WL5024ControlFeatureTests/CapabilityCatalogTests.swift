@@ -17,6 +17,23 @@ struct CapabilityCatalogTests {
         }
     }
 
+    @Test func visibleSurfaceSeparatesWritableAndReadOnlySettings() {
+        #expect(CapabilityCatalog.configurableSettings.count == 10)
+        #expect(CapabilityCatalog.readOnlySettings.count == 7)
+        #expect(Set(CapabilityCatalog.configurableSettings).isDisjoint(with: CapabilityCatalog.readOnlySettings))
+        #expect(Set(CapabilityCatalog.configurableSettings) == Set(ShippingWriteQualifications.orderedKeys))
+        #expect(
+            Set(CapabilityCatalog.configurableSettings + CapabilityCatalog.readOnlySettings)
+                == Set(ShippingSettingReads.orderedKeys)
+        )
+        #expect(CapabilityCatalog.visibleConfigurationSections == [
+            .noiseControl,
+            .callsAndMicrophone,
+            .wearAndAutomation,
+            .device,
+        ])
+    }
+
     @Test @MainActor func mockControllerCanSetEveryNonActionCapability() async throws {
         let controller = MockHeadsetController()
         _ = await controller.start()

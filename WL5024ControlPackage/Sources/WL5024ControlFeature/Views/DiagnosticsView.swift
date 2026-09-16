@@ -2,14 +2,18 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct DiagnosticsView: View {
+public struct HeadsetDiagnosticsView: View {
     @Bindable var model: HeadsetModel
     @State private var exportPhase: DiagnosticExportPhase = .idle
     @State private var exportAlert: DiagnosticExportAlert?
     @State private var exportFocusRequest = 0
     @State private var exportButtonFocused = false
 
-    var body: some View {
+    public init(model: HeadsetModel) {
+        self.model = model
+    }
+
+    public var body: some View {
         DetailPageContainer {
             diagnosticSection("Connection") {
                 VStack(spacing: 8) {

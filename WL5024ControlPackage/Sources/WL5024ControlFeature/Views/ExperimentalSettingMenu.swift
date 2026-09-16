@@ -22,8 +22,7 @@ struct ExperimentalSettingMenu: View {
                 EmptyView()
             }
         }
-        .frame(width: DetailLayoutMetrics.pickerWidth, alignment: .trailing)
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .frame(width: 140, alignment: .trailing)
         // Visible action is "Set Value…"; expose an unambiguous name that
         // does not duplicate the hidden row title (AUD-010).
         .accessibilityLabel("Set value for \(String(localized: key.title))")

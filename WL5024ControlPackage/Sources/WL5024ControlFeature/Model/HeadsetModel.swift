@@ -5,7 +5,6 @@ import Observation
 @Observable
 public final class HeadsetModel {
     public private(set) var snapshot: HeadsetSnapshot
-    public var selectedPage: SettingsPage? = .overview
     public private(set) var pendingSettings: Set<HeadsetSettingKey> = []
     public private(set) var failure: HeadsetFailure?
     public private(set) var isCommandInFlight = false
