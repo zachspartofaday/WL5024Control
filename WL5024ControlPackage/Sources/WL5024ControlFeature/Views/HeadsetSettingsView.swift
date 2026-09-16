@@ -401,7 +401,7 @@ private struct ConfigurableSettingRow: View {
                 Text(key.title)
                     .font(.body)
                     .help(String(localized: key.explanation))
-                    .accessibilityHint(Text(key.explanation))
+                    .accessibilityHidden(true)
                 Spacer(minLength: 6)
                 valueOrControl
             }
@@ -451,11 +451,13 @@ private struct ConfigurableSettingRow: View {
             .labelsHidden()
             .toggleStyle(.switch)
             .accessibilityLabel(Text(key.title))
+            .accessibilityHint(Text(key.explanation))
             .accessibilityIdentifier("setting.toggle.\(key.rawValue)")
             .fixedSize()
         case .choices:
             NativeAccessiblePicker(
                 label: String(localized: key.title),
+                hint: String(localized: key.explanation),
                 choices: key.choices,
                 selection: Binding(
                     get: { if case .choice(let choice) = value { choice } else { "" } },
@@ -495,6 +497,7 @@ private struct ReadOnlySettingRow: View {
                 .font(.body)
                 .lineLimit(2)
                 .help(String(localized: key.explanation))
+                .accessibilityHidden(true)
             Spacer(minLength: 6)
             StaticSettingValue(key: key, value: model.value(for: key))
         }
@@ -525,6 +528,7 @@ private struct StaticSettingValue: View {
             .textSelection(.enabled)
             .accessibilityLabel(Text(key.title))
             .accessibilityValue(formattedValue)
+            .accessibilityHint(Text(key.explanation))
             .accessibilityIdentifier("setting.value.\(key.rawValue)")
     }
 
@@ -547,6 +551,7 @@ private struct LaunchAtLoginRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Text("Launch at Login")
+                    .accessibilityHidden(true)
                 Spacer(minLength: 6)
                 Toggle("Launch at Login", isOn: Binding(
                     get: { model.isEnabled },
@@ -555,9 +560,11 @@ private struct LaunchAtLoginRow: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .accessibilityLabel("Launch at Login")
+                .accessibilityHint(accessibilityHint)
                 .accessibilityIdentifier("launchAtLogin.toggle")
                 .disabled(model.state == .updating)
                 stateLabel
+                    .accessibilityHidden(true)
             }
             .frame(height: 24)
 
@@ -565,11 +572,30 @@ private struct LaunchAtLoginRow: View {
                 Button("Open Login Items…", action: model.openSystemSettings)
                     .controlSize(.small)
             }
-            if case .failed(let message) = model.state {
-                Text(message)
+            if let failureMessage {
+                Text(failureMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var failureMessage: String? {
+        if let operationFailure = model.operationFailure { return operationFailure }
+        if case .failed(let message) = model.state { return message }
+        return nil
+    }
+
+    private var accessibilityHint: String {
+        switch model.state {
+        case .enabled, .disabled:
+            "Controls whether WL5024 Control starts in the menu bar when you log in to this Mac"
+        case .requiresApproval:
+            "Approval is required in System Settings. Use Open Login Items to continue."
+        case .updating:
+            "The Launch at Login setting is being updated."
+        case .failed:
+            "Launch at Login is unavailable for this copy of the app."
         }
     }
 
@@ -599,6 +625,7 @@ private enum BluetoothPrivacySettings {
 
 private struct NativeAccessiblePicker: NSViewRepresentable {
     let label: String
+    let hint: String
     let choices: [SettingChoice]
     @Binding var selection: String
     @Environment(\.isEnabled) private var isEnabled
@@ -612,6 +639,7 @@ private struct NativeAccessiblePicker: NSViewRepresentable {
         button.setAccessibilityElement(true)
         button.setAccessibilityRole(.popUpButton)
         button.setAccessibilityLabel(label)
+        button.setAccessibilityHelp(hint)
         return button
     }
 
@@ -626,6 +654,7 @@ private struct NativeAccessiblePicker: NSViewRepresentable {
         if let index = options.firstIndex(where: { $0.0 == selection }) { button.selectItem(at: index) }
         button.isEnabled = isEnabled
         button.setAccessibilityLabel(label)
+        button.setAccessibilityHelp(hint)
     }
 
     @MainActor

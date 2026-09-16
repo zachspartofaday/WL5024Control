@@ -29,6 +29,7 @@ protocol LaunchAtLoginServicing: AnyObject {
 @Observable
 public final class LaunchAtLoginModel {
     public private(set) var state: LaunchAtLoginState
+    public private(set) var operationFailure: String?
 
     private let service: any LaunchAtLoginServicing
 
@@ -51,6 +52,7 @@ public final class LaunchAtLoginModel {
     }
 
     public func setEnabled(_ enabled: Bool) {
+        operationFailure = nil
         state = .updating
         do {
             if enabled {
@@ -60,11 +62,17 @@ public final class LaunchAtLoginModel {
             }
             refresh()
         } catch {
-            state = .failed(error.localizedDescription)
+            updateStateFromService()
+            operationFailure = error.localizedDescription
         }
     }
 
     public func refresh() {
+        operationFailure = nil
+        updateStateFromService()
+    }
+
+    private func updateStateFromService() {
         state = switch service.status {
         case .enabled: .enabled
         case .disabled: .disabled

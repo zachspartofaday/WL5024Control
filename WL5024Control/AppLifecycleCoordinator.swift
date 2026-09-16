@@ -81,6 +81,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let descriptor = event.paramDescriptor(forKeyword: AEKeyword(keyAEPropData)) else {
             return false
         }
-        return descriptor.typeCodeValue == OSType(keyAELaunchedAsLogInItem)
+        return descriptor.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
     }
 }

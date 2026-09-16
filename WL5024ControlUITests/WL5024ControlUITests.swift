@@ -8,12 +8,16 @@ final class WL5024ControlUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["headsetSettings"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.outlines["Settings destinations"].exists)
 
-        XCTAssertTrue(app.descendants(matching: .any)["launchAtLogin.toggle"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["Off"].exists)
+        let launchAtLogin = app.checkBoxes["launchAtLogin.toggle"]
+        XCTAssertTrue(launchAtLogin.waitForExistence(timeout: 3))
+        XCTAssertTrue(launchAtLogin.isEnabled)
+        XCTAssertFalse(app.staticTexts["Launch at Login"].exists)
 
         let wearDetection = app.descendants(matching: .any)["setting.toggle.wearDetection"]
         XCTAssertTrue(scrollTo(wearDetection, in: app))
         XCTAssertTrue(wearDetection.isEnabled)
+        XCTAssertFalse(app.staticTexts["Wear detection"].exists)
+        XCTAssertFalse(app.staticTexts["Sidetone"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["setting.status.wearDetection"].exists)
 
         let readOnlyValue = app.descendants(matching: .any)["setting.value.autoPowerOff"]

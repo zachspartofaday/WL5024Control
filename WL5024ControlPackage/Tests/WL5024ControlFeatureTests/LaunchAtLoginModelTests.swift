@@ -33,15 +33,32 @@ struct LaunchAtLoginModelTests {
         let model = LaunchAtLoginModel(service: service)
 
         model.setEnabled(true)
-        guard case .failed(let message) = model.state else {
-            Issue.record("Expected a failed state")
-            return
-        }
-        #expect(message.contains("denied"))
+        #expect(model.state == .disabled)
+        #expect(model.operationFailure?.contains("denied") == true)
 
         service.error = nil
         model.refresh()
         #expect(model.state == .disabled)
+        #expect(model.operationFailure == nil)
+    }
+
+    @Test func preservesEnabledStateAndRetryDirectionWhenUnregisterFails() {
+        let service = TestLaunchAtLoginService(status: .enabled)
+        service.error = TestError.denied
+        let model = LaunchAtLoginModel(service: service)
+
+        model.setEnabled(false)
+        #expect(model.state == .enabled)
+        #expect(model.isEnabled)
+        #expect(model.operationFailure?.contains("denied") == true)
+        #expect(service.unregisterCallCount == 1)
+        #expect(service.registerCallCount == 0)
+
+        service.error = nil
+        model.setEnabled(false)
+        #expect(model.state == .disabled)
+        #expect(service.unregisterCallCount == 2)
+        #expect(service.registerCallCount == 0)
     }
 }
 
