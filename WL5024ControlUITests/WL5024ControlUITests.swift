@@ -106,8 +106,8 @@ final class WL5024ControlUITests: XCTestCase {
     @MainActor
     func testLaunchAtLoginApprovalIsMacLocalAndActionable() {
         let app = launch(["--demo", "--ui-login-approval"])
-        let approval = app.staticTexts["Approval Required"]
-        XCTAssertTrue(scrollTo(approval, in: app))
+        XCTAssertTrue(app.checkBoxes["launchAtLogin.toggle"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["Approval Required"].exists)
         XCTAssertTrue(app.buttons["Open Login Items…"].exists)
     }
 
