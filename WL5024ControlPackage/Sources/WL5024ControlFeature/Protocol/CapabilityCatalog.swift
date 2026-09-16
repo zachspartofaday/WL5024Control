@@ -2,44 +2,33 @@ import Foundation
 
 public enum CapabilityCatalog {
     public static let all: [CapabilityDefinition] = HeadsetSettingKey.allCases.map(definition)
-    public static let interactiveSettings: [HeadsetSettingKey] = [
+    public static let configurableSettings: [HeadsetSettingKey] = [
         .wearDetection,
         .automaticMedia,
         .muteMicrophoneOnRemoval,
         .quickPause,
         .quickPauseSensitivity,
         .answerCallsOnWear,
-        .autoPowerOff,
-        .environmentDetection,
         .microphoneNoiseCancellation,
         .sidetone,
         .busyLight,
         .voiceGuidance,
+    ]
+    public static let readOnlySettings: [HeadsetSettingKey] = [
+        .autoPowerOff,
+        .environmentDetection,
         .smartSwitch,
         .micFlipAction,
         .ucProfile,
         .ucAppStatus,
         .leAudioFeatureMode,
     ]
-    public static let experimentalSettings: [HeadsetSettingKey] = [
-        .wearDetection,
-        .automaticMedia,
-        .muteMicrophoneOnRemoval,
-        .quickPause,
-        .quickPauseSensitivity,
-        .answerCallsOnWear,
-        .microphoneNoiseCancellation,
-        .sidetone,
-        .busyLight,
-        .voiceGuidance,
-    ]
-    public static let visiblePages: [SettingsPage] = [
-        .overview,
+    public static let experimentalSettings = configurableSettings
+    public static let visibleConfigurationSections: [SettingsSection] = [
         .noiseControl,
         .callsAndMicrophone,
         .wearAndAutomation,
         .device,
-        .diagnostics,
     ]
 
     public static func definition(for key: HeadsetSettingKey) -> CapabilityDefinition {

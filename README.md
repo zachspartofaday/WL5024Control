@@ -1,6 +1,6 @@
 # WL5024 Control
 
-A native Mac app for the **Dell Premier Wireless ANC Headset WL5024**. Adjust wear detection, stop the headset from automatically controlling your music, and manage supported microphone and call settings from a settings window or the menu bar.
+A native Mac app for the **Dell Premier Wireless ANC Headset WL5024**. Adjust wear detection, stop the headset from automatically controlling your music, and manage supported microphone and call settings from one compact settings window.
 
 **Requires macOS 26 or newer and an Apple silicon Mac.** This is an independent community project, not an official Dell app or a complete replacement for Dell's software.
 
@@ -13,30 +13,27 @@ A native Mac app for the **Dell Premier Wireless ANC Headset WL5024**. Adjust we
 | Wear and automation | Wear detection, automatic media pause/resume, mute when removed, answer calls when worn, Quick Pause and its sensitivity |
 | Calls and microphone | Sidetone (off or levels 0–5), busy light, microphone noise cancellation |
 | Voice guidance | Turn headset voice guidance on or off |
-| Menu bar | View connection state and toggle automatic media control once its current value is available |
+| Menu bar | View connection and battery status, open Settings or Diagnostics, and refresh the headset |
 | Headset status | Refresh settings and view firmware or battery information when available |
 | Diagnostics | Inspect the connection, run read-only discovery, and export a local diagnostic log |
 | Demo mode | Explore the interface without connecting a headset |
 
-**Live setting changes are experimental.** The app labels them accordingly and reports success only after the headset acknowledges a change and returns the requested value. Settings are changed only when you choose a value; connecting or refreshing does not change your preferences.
+**Live setting changes are experimental.** The app reports success only after the headset acknowledges a change and returns the requested value. These settings are written to the headset: after a successful write they continue to apply without the app and are intended to follow the headset when it is used with another device. Connecting or refreshing does not change your preferences.
 
-Automatic power off, Environment Detection, Smart Switch, microphone-boom action, UC profile/status, and LE Audio feature mode are **read-only** where the headset responds. Availability depends on the headset and firmware.
+Automatic power off, Environment Detection, Smart Switch, microphone-boom action, UC profile/status, and LE Audio feature mode appear in the collapsed **Headset Information** section and are **read-only** where the headset responds. Availability depends on the headset and firmware. **Launch at Login** is the only app preference shown; it is stored on this Mac rather than on the headset.
 
 ## Screenshots
 
-These screenshots show the actual app in **demo mode**, with simulated connection details and values. Live controls may be experimental, read-only, or unavailable.
+The current release uses a single, two-column settings surface. Writable headset controls are grouped together; device-reported, read-only values are collapsed by default; Diagnostics opens in a separate utility window.
 
-### Headset overview
+![WL5024 Control settings in light appearance](Documentation/Screenshots/settings-light.png)
 
-![WL5024 Control overview showing connection status and automatic media control in demo mode](Documentation/Screenshots/overview.png)
+<details>
+<summary>Dark appearance</summary>
 
-### Wear and automation
+![WL5024 Control settings in dark appearance](Documentation/Screenshots/settings-dark.png)
 
-![Wear and Automation settings showing wear detection, media control, call actions, and Quick Pause in demo mode](Documentation/Screenshots/wear-and-automation.png)
-
-### Calls and microphone
-
-![Calls and Microphone settings showing sidetone and busy light in demo mode](Documentation/Screenshots/calls-and-microphone.png)
+</details>
 
 ## Install and connect
 
@@ -45,6 +42,8 @@ These screenshots show the actual app in **demo mode**, with simulated connectio
 3. Pair and connect **Dell WL5024 Headset** in **System Settings → Bluetooth**.
 4. Allow Bluetooth access when the app asks. Keep the headset powered on and nearby while the app connects.
 5. Choose **Refresh** to read the available settings, then change only the settings you want to adjust.
+
+The app remains available from its menu-bar icon after its last window is closed and no longer appears in the Dock. Opening it normally from Finder or Spotlight shows Settings and the Dock icon while a window is open. **Launch at Login** is opt-in; a login launch starts menu-only without opening a window.
 
 The app uses Bluetooth for settings control. It can detect compatible Dell USB receivers, but settings control through a receiver or a USB cable is not supported in the app.
 

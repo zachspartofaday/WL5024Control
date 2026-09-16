@@ -14,7 +14,7 @@ Build 10 incorporates direct physical-headset captures. It exposes ten explicitl
 
 ## Run
 
-Open `WL5024Control.xcworkspace`, select the `WL5024Control` scheme, and run. Pass `--demo` as a launch argument to exercise every setting without a physical headset.
+Open `WL5024Control.xcworkspace`, select the `WL5024Control` scheme, and run. Pass `--demo` as a launch argument to exercise every setting without a physical headset. A normal launch opens Settings; `--ui-login-launch` exercises the login-item path, which starts menu-only. UI tests pair login-item flags with a mock ServiceManagement adapter and never register the test build as a real login item.
 
 The app first queries already-connected BLE peripherals for the recovered Airoha control service. If macOS's audio connection does not expose that route, it falls back to an unfiltered BLE scan but accepts only the recovered service UUID or a normalized `WL5024` device name before performing read-only service validation. A CoreBluetooth connection attempt that remains pending for 12 seconds is cancelled and retried through the same gated discovery path. The app also discovers candidate headset/HR024/UD2403 USB HID interfaces. USB writes remain disabled in the shipping app; the direct-headset command-line path constructs only the recovered generic preference getter.
 
@@ -52,15 +52,19 @@ The `--live` path connects straight to the recovered CoreBluetooth service and p
 
 Probe exit codes are `0` for success, `64` for invalid arguments, and `74` for setup, I/O, response, or timeout failure. A completed Bluetooth query collection with any missing response exits `74`, preserving all partial results and the final response/timeout counts. Automation must check the exit code even when a log was produced.
 
-Live refreshes, writes, and discovery are bound to the connection in which they began. A disconnect, Bluetooth reset or permission loss, stop, or replacement connection aborts that work. Reconnecting to the same device also starts a new session; an old command cannot resume its writes or update the new session's values. Every writable live control remains explicitly experimental, including the menu-bar toggle after its current value becomes known.
+Live refreshes, writes, and discovery are bound to the connection in which they began. A disconnect, Bluetooth reset or permission loss, stop, or replacement connection aborts that work. Reconnecting to the same device also starts a new session; an old command cannot resume its writes or update the new session's values. Every writable live control remains experimental. The menu-bar menu exposes status and window actions, not headset controls.
 
 ## Visible setting surface
 
-- Microphone noise cancellation, plus read-only Environment Detection
+- Microphone noise cancellation
 - Sidetone levels 0–5/off and busy light
-- Wear detection, automatic media pause/resume, removal mute, wear-to-answer, and Quick Pause/sensitivity, plus read-only power-off timeout
-- Voice Guidance, plus read-only Smart Switch, microphone-boom action, UC profile/status, and LE Audio feature mode
-- Menu-bar automatic-media control, device state, battery display, diagnostics, and mock/demo operation
+- Wear detection, automatic media pause/resume, removal mute, wear-to-answer, and Quick Pause/sensitivity
+- Voice Guidance
+- A collapsed Headset Information section containing read-only power-off timeout, Environment Detection, Smart Switch, microphone-boom action, UC profile/status, and LE Audio feature mode
+- A This Mac section containing the opt-in Launch at Login preference
+- Menu-bar device state, battery display, Settings/Diagnostics/Refresh actions, and mock/demo operation
+
+The settings window uses one compact two-column surface. All writable controls are under **Headset Settings** and persist on the headset after a confirmed write. Read-only device reports are separated under **Headset Information**. No current headset setting is continuously enforced only while the app remains open. Launch at Login is Mac-local and login launches remain menu-only.
 
 The broader internal capability catalog still records firmware symbols and Windows vocabulary for future research, but incomplete controls—including ANC mode/level, Advanced Transparency, incoming-audio noise cancellation, EQ, device naming, touch/gesture controls, Windows-only Voice Prompts, assistant selection, and game/chat controls—do not appear in the normal UI. Experimental controls with an unknown current value show an explicit Set Value menu. Unknown wire values are never replaced with guessed defaults in live mode.
 

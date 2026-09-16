@@ -40,7 +40,7 @@ public enum HeadsetSettingKey: String, CaseIterable, Identifiable, Sendable, Cod
 
     public var id: Self { self }
 
-    public var page: SettingsPage {
+    public var section: SettingsSection {
         switch self {
         case .ancMode, .microphoneNoiseCancellation, .incomingAudioNoiseCancellation,
              .adaptiveANC, .advancedPassthrough, .environmentDetection:

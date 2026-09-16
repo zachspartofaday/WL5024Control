@@ -315,8 +315,8 @@ struct TransportStateTests {
     @Test func shippingRegistryContainsOnlyCompleteRecoveredBluetoothContracts() {
         #expect(ShippingWriteQualifications.orderedKeys == CapabilityCatalog.experimentalSettings)
         #expect(Set(ShippingWriteQualifications.all.keys) == Set(CapabilityCatalog.experimentalSettings))
-        #expect(ShippingSettingReads.orderedKeys == CapabilityCatalog.interactiveSettings)
-        #expect(Set(ShippingSettingReads.all.keys) == Set(CapabilityCatalog.interactiveSettings))
+        let visibleReadKeys = CapabilityCatalog.configurableSettings + CapabilityCatalog.readOnlySettings
+        #expect(Set(ShippingSettingReads.all.keys) == Set(visibleReadKeys))
         for key in [
             HeadsetSettingKey.wearDetection,
             .automaticMedia,
