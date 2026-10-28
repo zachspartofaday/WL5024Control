@@ -43,6 +43,8 @@ The current release uses a single, two-column settings surface. Writable headset
 4. Allow Bluetooth access when the app asks. Keep the headset powered on and nearby while the app connects.
 5. Choose **Refresh** to read the available settings, then change only the settings you want to adjust.
 
+New builds use the app identifier `com.partofaday.WL5024Control`. When upgrading from an earlier app identifier, macOS may ask for Bluetooth permission again; check app preferences and re-enable **Launch at Login** if needed.
+
 The app remains available from its menu-bar icon after its last window is closed and no longer appears in the Dock. Opening it normally from Finder or Spotlight shows Settings and the Dock icon while a window is open. **Launch at Login** is opt-in; a login launch starts menu-only without opening a window.
 
 The app uses Bluetooth for settings control. It can detect compatible Dell USB receivers, but settings control through a receiver or a USB cable is not supported in the app.
@@ -82,4 +84,4 @@ Built with SwiftUI, CoreBluetooth, and IOKit. Development requires Xcode 26 or n
 
 ## License
 
-[MIT](LICENSE) © 2026 Zachary Skjaveland. Dell and its product names are trademarks of their respective owners; this project is not affiliated with or endorsed by Dell.
+[MIT](LICENSE) © 2026 Zach S. Dell and its product names are trademarks of their respective owners; this project is not affiliated with or endorsed by Dell.

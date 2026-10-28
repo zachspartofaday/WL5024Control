@@ -37,7 +37,26 @@ jobs:
           --configuration Release
           --arch arm64
           --json '{"extraArgs":["CODE_SIGNING_ALLOWED=NO"]}'
+      - name: Show compiler diagnostics on failure
+        if: failure()
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import re
+
+          root = Path.home() / "Library/Developer/XcodeBuildMCP"
+          logs = sorted(root.glob("**/logs/build_macos_*.log"))
+          if not logs:
+              print("No XcodeBuildMCP build log was retained.")
+          for log in logs:
+              print(f"Compiler diagnostics: {log}")
+              matches = [line for line in log.read_text(errors="replace").splitlines()
+                         if re.search(r"(?:fatal )?error:|warning:", line)]
+              print("\n".join(matches) if matches else "No compiler error or warning lines found.")
+          PYTHON
       - name: Test Swift package
+        if: ${{ !cancelled() }}
         run: xcodebuildmcp swift-package test --package-path WL5024ControlPackage
       - name: Build Release package
+        if: ${{ !cancelled() }}
         run: xcodebuildmcp swift-package build --package-path WL5024ControlPackage --configuration release

@@ -14,6 +14,6 @@ Diagnostic exports may include Bluetooth identifiers, USB serial/location inform
 
 ## Release integrity
 
-Download binaries from this repository's GitHub Releases page. Release apps are signed with `Developer ID Application: Zachary Skjaveland (9T97GZT4MV)` and notarized by Apple. Release assets include a SHA-256 checksum file for checking download integrity. A checksum is useful for detecting a damaged download; the Developer ID signature identifies the publisher.
+Download binaries from this repository's GitHub Releases page. Release apps are signed with an Apple Developer ID Application certificate for Team ID `9T97GZT4MV` and notarized by Apple. Release assets include a SHA-256 checksum file for checking download integrity. A checksum is useful for detecting a damaged download; the Developer ID signature identifies the publisher.
 
 Headset writes remain experimental and require an acknowledgement and matching read-back. Firmware flashing and factory reset are outside the app's scope.
