@@ -82,4 +82,4 @@ Built with SwiftUI, CoreBluetooth, and IOKit. Development requires Xcode 26 or n
 
 ## License
 
-[MIT](LICENSE) © 2026 Zachary Skjaveland. Dell and its product names are trademarks of their respective owners; this project is not affiliated with or endorsed by Dell.
+[MIT](LICENSE) © 2026 Zach S. Dell and its product names are trademarks of their respective owners; this project is not affiliated with or endorsed by Dell.
