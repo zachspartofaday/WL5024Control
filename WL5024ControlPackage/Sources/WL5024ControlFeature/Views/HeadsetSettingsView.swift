@@ -555,7 +555,7 @@ private struct LaunchAtLoginRow: View {
                 Spacer(minLength: 6)
                 Toggle("Launch at Login", isOn: Binding(
                     get: { model.isEnabled },
-                    set: model.setEnabled
+                    set: { model.setEnabled($0) }
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
