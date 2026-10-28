@@ -55,6 +55,8 @@ jobs:
               print("\n".join(matches) if matches else "No compiler error or warning lines found.")
           PYTHON
       - name: Test Swift package
+        if: ${{ !cancelled() }}
         run: xcodebuildmcp swift-package test --package-path WL5024ControlPackage
       - name: Build Release package
+        if: ${{ !cancelled() }}
         run: xcodebuildmcp swift-package build --package-path WL5024ControlPackage --configuration release
